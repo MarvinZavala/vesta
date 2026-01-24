@@ -1,0 +1,135 @@
+// CoinGecko API for cryptocurrency prices
+// Free tier: 30 calls/minute, 10,000 calls/month
+
+const BASE_URL = 'https://api.coingecko.com/api/v3';
+
+export interface CoinPrice {
+  id: string;
+  symbol: string;
+  name: string;
+  current_price: number;
+  price_change_24h: number;
+  price_change_percentage_24h: number;
+  market_cap: number;
+  total_volume: number;
+  high_24h: number;
+  low_24h: number;
+  last_updated: string;
+}
+
+export interface CoinSearchResult {
+  id: string;
+  name: string;
+  symbol: string;
+  market_cap_rank: number;
+  thumb: string;
+  large: string;
+}
+
+// Common crypto symbol to CoinGecko ID mapping
+const SYMBOL_TO_ID: Record<string, string> = {
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  USDT: 'tether',
+  BNB: 'binancecoin',
+  XRP: 'ripple',
+  USDC: 'usd-coin',
+  SOL: 'solana',
+  ADA: 'cardano',
+  DOGE: 'dogecoin',
+  TRX: 'tron',
+  DOT: 'polkadot',
+  MATIC: 'matic-network',
+  SHIB: 'shiba-inu',
+  LTC: 'litecoin',
+  AVAX: 'avalanche-2',
+  LINK: 'chainlink',
+  UNI: 'uniswap',
+  ATOM: 'cosmos',
+  XLM: 'stellar',
+  FIL: 'filecoin',
+};
+
+export function getCoinGeckoId(symbol: string): string | null {
+  return SYMBOL_TO_ID[symbol.toUpperCase()] || null;
+}
+
+export async function getCoinPrice(coinId: string, currency: string = 'usd'): Promise<CoinPrice | null> {
+  try {
+    const response = await fetch(
+      `${BASE_URL}/coins/markets?vs_currency=${currency}&ids=${coinId}&order=market_cap_desc&per_page=1&page=1&sparkline=false&price_change_percentage=24h`
+    );
+
+    if (!response.ok) {
+      console.error('CoinGecko API error:', response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    return data[0] || null;
+  } catch (error) {
+    console.error('Error fetching coin price:', error);
+    return null;
+  }
+}
+
+export async function getMultipleCoinPrices(
+  coinIds: string[],
+  currency: string = 'usd'
+): Promise<CoinPrice[]> {
+  try {
+    const idsString = coinIds.join(',');
+    const response = await fetch(
+      `${BASE_URL}/coins/markets?vs_currency=${currency}&ids=${idsString}&order=market_cap_desc&per_page=${coinIds.length}&page=1&sparkline=false&price_change_percentage=24h`
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    return data as CoinPrice[];
+  } catch (error) {
+    console.error('Error fetching multiple coin prices:', error);
+    return [];
+  }
+}
+
+export async function searchCoins(query: string): Promise<CoinSearchResult[]> {
+  try {
+    const response = await fetch(
+      `${BASE_URL}/search?query=${encodeURIComponent(query)}`
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    return (data.coins || []).slice(0, 10) as CoinSearchResult[];
+  } catch (error) {
+    console.error('Error searching coins:', error);
+    return [];
+  }
+}
+
+export async function getSimplePrice(
+  coinIds: string[],
+  currency: string = 'usd'
+): Promise<Record<string, { usd: number; usd_24h_change: number }>> {
+  try {
+    const idsString = coinIds.join(',');
+    const response = await fetch(
+      `${BASE_URL}/simple/price?ids=${idsString}&vs_currencies=${currency}&include_24hr_change=true`
+    );
+
+    if (!response.ok) {
+      return {};
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching simple prices:', error);
+    return {};
+  }
+}
