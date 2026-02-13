@@ -3,15 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
   Alert,
 } from 'react-native';
-import { Link, useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Link } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Button, Input } from '@/components/ui';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuthStore } from '@/store/authStore';
@@ -19,7 +18,6 @@ import { FontSize, FontWeight, Spacing } from '@/constants/theme';
 
 export default function SignUpScreen() {
   const { colors, isDark } = useTheme();
-  const router = useRouter();
   const { register, isLoading, error, clearError } = useAuthStore();
 
   const [email, setEmail] = useState('');
@@ -59,12 +57,11 @@ export default function SignUpScreen() {
 
     const result = await register(email, password);
 
-    if (result.success) {
-      // Navigation will be handled by the auth state change
-    } else {
+    if (!result.success) {
       Alert.alert('Sign Up Failed', result.error || 'Please try again');
     }
   };
+
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
@@ -78,22 +75,16 @@ export default function SignUpScreen() {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
         >
-          <Animated.View
-            entering={FadeInDown.duration(600)}
-            style={styles.header}
-          >
+          <View style={styles.header}>
             <Text style={[styles.title, { color: colors.text }]}>
               Create Account
             </Text>
             <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
               Start tracking your wealth today
             </Text>
-          </Animated.View>
+          </View>
 
-          <Animated.View
-            entering={FadeInDown.delay(200).duration(600)}
-            style={styles.form}
-          >
+          <View style={styles.form}>
             <Input
               label="Email"
               placeholder="Enter your email"
@@ -135,28 +126,9 @@ export default function SignUpScreen() {
               style={{ marginTop: Spacing.md }}
             />
 
-            <View style={styles.divider}>
-              <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
-              <Text style={[styles.dividerText, { color: colors.textSecondary }]}>
-                or
-              </Text>
-              <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
-            </View>
+          </View>
 
-            {/* Apple Sign In would go here - requires development build */}
-            <Button
-              title="Continue with Apple"
-              variant="outline"
-              fullWidth
-              size="lg"
-              onPress={() => Alert.alert('Coming Soon', 'Apple Sign In requires a development build')}
-            />
-          </Animated.View>
-
-          <Animated.View
-            entering={FadeInDown.delay(400).duration(600)}
-            style={styles.footer}
-          >
+          <View style={styles.footer}>
             <Text style={[styles.footerText, { color: colors.textSecondary }]}>
               Already have an account?{' '}
             </Text>
@@ -165,7 +137,7 @@ export default function SignUpScreen() {
                 Sign In
               </Text>
             </Link>
-          </Animated.View>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -197,19 +169,6 @@ const styles = StyleSheet.create({
   },
   form: {
     flex: 1,
-  },
-  divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: Spacing.lg,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-  },
-  dividerText: {
-    marginHorizontal: Spacing.md,
-    fontSize: FontSize.sm,
   },
   footer: {
     flexDirection: 'row',

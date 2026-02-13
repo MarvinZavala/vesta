@@ -146,6 +146,7 @@ export async function fetchPricesForHoldings(
 
   // Group holdings by asset type for batch processing
   const stockSymbols: string[] = [];
+  const symbolToAssetType = new Map<string, AssetType>(); // Track actual asset types
   const cryptoSymbols: string[] = [];
   const metalTypes: AssetType[] = [];
 
@@ -157,6 +158,7 @@ export async function fetchPricesForHoldings(
       case 'etf':
       case 'mutual_fund':
         stockSymbols.push(holding.symbol);
+        symbolToAssetType.set(holding.symbol, holding.asset_type);
         break;
       case 'crypto':
         cryptoSymbols.push(holding.symbol);
@@ -171,13 +173,14 @@ export async function fetchPricesForHoldings(
     }
   }
 
-  // Fetch stocks in batch
+  // Fetch stocks/ETFs/mutual funds in batch
   if (stockSymbols.length > 0) {
     const stockQuotes = await getMultipleStockQuotes([...new Set(stockSymbols)]);
     for (const [symbol, quote] of stockQuotes) {
+      const actualType = symbolToAssetType.get(symbol) || 'stock';
       const price: UnifiedPrice = {
         symbol,
-        assetType: 'stock',
+        assetType: actualType,
         price: quote.c,
         priceChange24h: quote.d,
         priceChangePercent24h: quote.dp,
@@ -185,8 +188,8 @@ export async function fetchPricesForHoldings(
         source: 'finnhub',
         fetchedAt: new Date(),
       };
-      results.set(getCacheKey(symbol, 'stock'), price);
-      priceCache.set(getCacheKey(symbol, 'stock'), price);
+      results.set(getCacheKey(symbol, actualType), price);
+      priceCache.set(getCacheKey(symbol, actualType), price);
     }
   }
 
@@ -255,7 +258,7 @@ async function updatePriceCache(price: UnifiedPrice): Promise<void> {
         fetched_at: price.fetchedAt.toISOString(),
       },
       {
-        onConflict: 'symbol,asset_type',
+        onConflict: 'symbol,asset_type,currency',
       }
     );
   } catch (error) {

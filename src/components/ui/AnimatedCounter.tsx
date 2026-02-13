@@ -1,11 +1,10 @@
-import React, { useEffect } from 'react';
-import { Text, StyleSheet, TextStyle } from 'react-native';
-import Animated, {
+import React, { useEffect, useCallback } from 'react';
+import { Text, StyleSheet, TextStyle, StyleProp } from 'react-native';
+import {
   useSharedValue,
-  useAnimatedStyle,
+  useAnimatedReaction,
   withTiming,
   Easing,
-  useDerivedValue,
   runOnJS,
 } from 'react-native-reanimated';
 import { formatCurrency } from '@/utils/formatters';
@@ -14,7 +13,7 @@ interface AnimatedCounterProps {
   value: number;
   currency?: string;
   duration?: number;
-  style?: TextStyle;
+  style?: StyleProp<TextStyle>;
   prefix?: string;
   suffix?: string;
 }
@@ -28,7 +27,17 @@ export function AnimatedCounter({
   suffix = '',
 }: AnimatedCounterProps) {
   const animatedValue = useSharedValue(0);
-  const [displayValue, setDisplayValue] = React.useState('0');
+  const [displayValue, setDisplayValue] = React.useState(
+    formatCurrency(0, currency)
+  );
+
+  // Format on JS thread, not worklet thread (Intl.NumberFormat unavailable in worklets)
+  const updateDisplay = useCallback(
+    (val: number) => {
+      setDisplayValue(formatCurrency(val, currency));
+    },
+    [currency]
+  );
 
   useEffect(() => {
     animatedValue.value = withTiming(value, {
@@ -37,18 +46,17 @@ export function AnimatedCounter({
     });
   }, [value, duration]);
 
-  useDerivedValue(() => {
-    runOnJS(setDisplayValue)(formatCurrency(animatedValue.value, currency));
-  });
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: withTiming(1, { duration: 200 }),
-  }));
+  useAnimatedReaction(
+    () => animatedValue.value,
+    (currentValue) => {
+      runOnJS(updateDisplay)(currentValue);
+    }
+  );
 
   return (
-    <Animated.Text style={[styles.text, style, animatedStyle]}>
+    <Text style={[styles.text, style]}>
       {prefix}{displayValue}{suffix}
-    </Animated.Text>
+    </Text>
   );
 }
 
@@ -56,7 +64,7 @@ export function AnimatedCounter({
 interface PercentCounterProps {
   value: number;
   duration?: number;
-  style?: TextStyle;
+  style?: StyleProp<TextStyle>;
   showSign?: boolean;
 }
 
@@ -67,7 +75,16 @@ export function PercentCounter({
   showSign = true,
 }: PercentCounterProps) {
   const animatedValue = useSharedValue(0);
-  const [displayValue, setDisplayValue] = React.useState('0.00');
+  const [displayValue, setDisplayValue] = React.useState('0.00%');
+
+  // Format on JS thread, not worklet thread
+  const updateDisplay = useCallback(
+    (val: number) => {
+      const sign = showSign && val >= 0 ? '+' : '';
+      setDisplayValue(`${sign}${val.toFixed(2)}%`);
+    },
+    [showSign]
+  );
 
   useEffect(() => {
     animatedValue.value = withTiming(value, {
@@ -76,15 +93,17 @@ export function PercentCounter({
     });
   }, [value, duration]);
 
-  useDerivedValue(() => {
-    const sign = showSign && animatedValue.value >= 0 ? '+' : '';
-    runOnJS(setDisplayValue)(`${sign}${animatedValue.value.toFixed(2)}%`);
-  });
+  useAnimatedReaction(
+    () => animatedValue.value,
+    (currentValue) => {
+      runOnJS(updateDisplay)(currentValue);
+    }
+  );
 
   return (
-    <Animated.Text style={[styles.text, style]}>
+    <Text style={[styles.text, style]}>
       {displayValue}
-    </Animated.Text>
+    </Text>
   );
 }
 

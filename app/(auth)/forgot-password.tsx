@@ -3,15 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
   Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { Button, Input } from '@/components/ui';
 import { useTheme } from '@/hooks/useTheme';
@@ -49,38 +48,26 @@ export default function ForgotPasswordScreen() {
         <StatusBar style={isDark ? 'light' : 'dark'} />
 
         <View style={styles.successContainer}>
-          <Animated.View
-            entering={FadeInDown.duration(600)}
-            style={[styles.successIcon, { backgroundColor: colors.successLight }]}
-          >
+          <View style={[styles.successIcon, { backgroundColor: colors.successLight }]}>
             <Ionicons name="mail-outline" size={48} color={colors.success} />
-          </Animated.View>
+          </View>
 
-          <Animated.Text
-            entering={FadeInDown.delay(200).duration(600)}
-            style={[styles.successTitle, { color: colors.text }]}
-          >
+          <Text style={[styles.successTitle, { color: colors.text }]}>
             Check Your Email
-          </Animated.Text>
+          </Text>
 
-          <Animated.Text
-            entering={FadeInDown.delay(300).duration(600)}
-            style={[styles.successSubtitle, { color: colors.textSecondary }]}
-          >
+          <Text style={[styles.successSubtitle, { color: colors.textSecondary }]}>
             We've sent password reset instructions to {email}
-          </Animated.Text>
+          </Text>
 
-          <Animated.View
-            entering={FadeInDown.delay(400).duration(600)}
-            style={styles.successButton}
-          >
+          <View style={styles.successButton}>
             <Button
               title="Back to Sign In"
               onPress={() => router.replace('/(auth)/sign-in')}
               fullWidth
               size="lg"
             />
-          </Animated.View>
+          </View>
         </View>
       </SafeAreaView>
     );
@@ -98,22 +85,16 @@ export default function ForgotPasswordScreen() {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
         >
-          <Animated.View
-            entering={FadeInDown.duration(600)}
-            style={styles.header}
-          >
+          <View style={styles.header}>
             <Text style={[styles.title, { color: colors.text }]}>
               Reset Password
             </Text>
             <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
               Enter your email and we'll send you instructions to reset your password
             </Text>
-          </Animated.View>
+          </View>
 
-          <Animated.View
-            entering={FadeInDown.delay(200).duration(600)}
-            style={styles.form}
-          >
+          <View style={styles.form}>
             <Input
               label="Email"
               placeholder="Enter your email"
@@ -143,7 +124,7 @@ export default function ForgotPasswordScreen() {
               size="lg"
               style={{ marginTop: Spacing.md }}
             />
-          </Animated.View>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

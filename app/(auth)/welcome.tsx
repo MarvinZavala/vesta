@@ -3,24 +3,19 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Link } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import Animated, {
-  FadeIn,
-  FadeInDown,
-  FadeInUp,
-} from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, { FadeIn, FadeInDown, FadeInUp, ZoomIn } from 'react-native-reanimated';
 import { Button } from '@/components/ui';
 import { useTheme } from '@/hooks/useTheme';
-import { FontSize, FontWeight, Spacing, BorderRadius } from '@/constants/theme';
-
-const { width } = Dimensions.get('window');
+import { Brand, FontSize, FontWeight, Spacing, BorderRadius } from '@/constants/theme';
 
 export default function WelcomeScreen() {
+  const { height } = useWindowDimensions();
   const { colors, isDark } = useTheme();
 
   return (
@@ -29,58 +24,57 @@ export default function WelcomeScreen() {
 
       {/* Hero Section */}
       <View style={styles.heroSection}>
-        <Animated.View
-          entering={FadeIn.delay(200).duration(800)}
-          style={[styles.logoContainer, { backgroundColor: colors.primary }]}
-        >
-          <Ionicons name="analytics" size={48} color="#FFFFFF" />
+        {/* Decorative circles */}
+        <Animated.View entering={FadeIn.delay(300).duration(800)} style={[styles.decorCircle1, { backgroundColor: Brand.emerald + '15', top: height * 0.05 }]} />
+        <Animated.View entering={FadeIn.delay(400).duration(800)} style={[styles.decorCircle2, { backgroundColor: Brand.gold + '10', bottom: height * 0.02 }]} />
+
+        <Animated.View entering={ZoomIn.delay(100).duration(500)} style={[styles.logoContainer, { backgroundColor: Brand.emerald }]}>
+          <Ionicons name="wallet" size={48} color="#FFFFFF" />
         </Animated.View>
 
-        <Animated.Text
-          entering={FadeInUp.delay(400).duration(600)}
-          style={[styles.title, { color: colors.text }]}
-        >
-          Vesta
-        </Animated.Text>
+        <Animated.View entering={FadeInDown.delay(300).duration(450)}>
+          <Text style={[styles.title, { color: colors.text }]}>
+            Vesta
+          </Text>
+        </Animated.View>
 
-        <Animated.Text
-          entering={FadeInUp.delay(500).duration(600)}
-          style={[styles.subtitle, { color: colors.textSecondary }]}
-        >
-          Track all your wealth in one place
-        </Animated.Text>
+        <Animated.View entering={FadeInDown.delay(420).duration(450)}>
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            Track all your wealth in one place
+          </Text>
+        </Animated.View>
       </View>
 
       {/* Features Section */}
-      <Animated.View
-        entering={FadeInDown.delay(600).duration(600)}
-        style={styles.featuresContainer}
-      >
-        <FeatureItem
-          icon="pie-chart-outline"
-          title="All Asset Types"
-          description="Stocks, crypto, gold, real estate & more"
-          colors={colors}
-        />
-        <FeatureItem
-          icon="trending-up-outline"
-          title="Real-time Prices"
-          description="Live updates for your entire portfolio"
-          colors={colors}
-        />
-        <FeatureItem
-          icon="bulb-outline"
-          title="AI-Powered Insights"
-          description="Get personalized recommendations"
-          colors={colors}
-        />
-      </Animated.View>
+      <View style={styles.featuresContainer}>
+        <Animated.View entering={FadeInUp.delay(500).duration(400)}>
+          <FeatureItem
+            icon="pie-chart-outline"
+            title="All Asset Types"
+            description="Stocks, crypto, gold, real estate & more"
+            colors={colors}
+          />
+        </Animated.View>
+        <Animated.View entering={FadeInUp.delay(600).duration(400)}>
+          <FeatureItem
+            icon="trending-up-outline"
+            title="Real-time Prices"
+            description="Live updates for your entire portfolio"
+            colors={colors}
+          />
+        </Animated.View>
+        <Animated.View entering={FadeInUp.delay(700).duration(400)}>
+          <FeatureItem
+            icon="bulb-outline"
+            title="AI-Powered Insights"
+            description="Get personalized recommendations"
+            colors={colors}
+          />
+        </Animated.View>
+      </View>
 
       {/* CTA Section */}
-      <Animated.View
-        entering={FadeInDown.delay(800).duration(600)}
-        style={styles.ctaContainer}
-      >
+      <Animated.View entering={FadeIn.delay(800).duration(400)} style={styles.ctaContainer}>
         <Link href="/(auth)/sign-up" asChild>
           <Button title="Get Started" fullWidth size="lg" />
         </Link>
@@ -141,11 +135,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingTop: Spacing.xxl,
+    position: 'relative',
+  },
+  decorCircle1: {
+    position: 'absolute',
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    right: -60,
+  },
+  decorCircle2: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    left: -50,
   },
   logoContainer: {
     width: 100,
     height: 100,
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.xxl,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Spacing.lg,
@@ -154,6 +163,7 @@ const styles = StyleSheet.create({
     fontSize: FontSize.display,
     fontWeight: FontWeight.bold,
     marginBottom: Spacing.sm,
+    textAlign: 'center',
   },
   subtitle: {
     fontSize: FontSize.lg,

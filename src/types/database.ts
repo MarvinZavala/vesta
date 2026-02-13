@@ -109,6 +109,24 @@ export interface AIAnalysis {
   created_at: string;
 }
 
+// Chat session for AI conversations
+export interface ChatSession {
+  id: string;
+  user_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Individual message in a chat session
+export interface ChatMessage {
+  id: string;
+  session_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
 // Computed types for UI
 export interface HoldingWithPrice extends Holding {
   current_price: number;

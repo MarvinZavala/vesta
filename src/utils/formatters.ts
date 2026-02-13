@@ -107,6 +107,22 @@ export const ASSET_TYPE_LABELS: Record<string, string> = {
   other: 'Other',
 };
 
+// Asset type icons (Ionicons)
+export const ASSET_TYPE_ICONS: Record<string, string> = {
+  stock: 'trending-up',
+  etf: 'layers',
+  mutual_fund: 'pie-chart',
+  crypto: 'logo-bitcoin',
+  commodity_gold: 'diamond',
+  commodity_silver: 'diamond-outline',
+  commodity_platinum: 'diamond',
+  fixed_income_bond: 'document-text',
+  fixed_income_cd: 'wallet',
+  real_estate: 'home',
+  cash: 'cash',
+  other: 'cube',
+};
+
 // Asset type colors for charts
 export const ASSET_TYPE_COLORS: Record<string, string> = {
   stock: '#4F46E5', // Indigo

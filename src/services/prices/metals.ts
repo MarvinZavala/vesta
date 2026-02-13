@@ -1,11 +1,8 @@
-// Metals-API for precious metals prices (gold, silver, platinum)
-// Free tier: 50 requests/month
+// Precious metals prices (gold, silver, platinum)
+// Primary: GoldPriceZ.com (FREE, no API key, 30-60 req/hour)
+// Fallback: Local prices
 
-const METALS_API_KEY = process.env.EXPO_PUBLIC_METALS_API_KEY || 'YOUR_METALS_API_KEY';
-const BASE_URL = 'https://metals-api.com/api';
-
-// Alternative: Use free fallback data from public sources
-const FALLBACK_URL = 'https://api.metalpriceapi.com/v1';
+const GOLDPRICEZ_URL = 'https://goldpricez.com/api/rates/currency/usd/measure/ounce';
 
 export interface MetalPrice {
   metal: string;
@@ -23,12 +20,29 @@ export const METAL_SYMBOLS = {
   palladium: 'XPD',
 };
 
-// Fallback prices (updated periodically - use as last resort)
+// Fallback prices (updated Jan 2026 - use as last resort)
 const FALLBACK_PRICES: Record<string, number> = {
-  XAU: 2050.00, // Gold per oz
-  XAG: 23.50,   // Silver per oz
-  XPT: 920.00,  // Platinum per oz
-  XPD: 1050.00, // Palladium per oz
+  XAU: 2650.00, // Gold per oz
+  XAG: 30.50,   // Silver per oz
+  XPT: 980.00,  // Platinum per oz
+  XPD: 950.00,  // Palladium per oz
+};
+
+// GoldPriceZ response interface
+interface GoldPriceZResponse {
+  gold?: number;
+  silver?: number;
+  platinum?: number;
+  palladium?: number;
+  timestamp?: string;
+}
+
+// Map GoldPriceZ keys to our symbols
+const GOLDPRICEZ_TO_SYMBOL: Record<string, string> = {
+  gold: 'XAU',
+  silver: 'XAG',
+  platinum: 'XPT',
+  palladium: 'XPD',
 };
 
 export async function getMetalPrice(
@@ -36,24 +50,25 @@ export async function getMetalPrice(
   currency: string = 'USD'
 ): Promise<MetalPrice | null> {
   try {
-    // Try primary API
-    const response = await fetch(
-      `${BASE_URL}/latest?access_key=${METALS_API_KEY}&base=${currency}&symbols=${metalSymbol}`
-    );
+    // Try GoldPriceZ API (free, no key required)
+    const response = await fetch(GOLDPRICEZ_URL);
 
     if (response.ok) {
-      const data = await response.json();
+      const data: GoldPriceZResponse = await response.json();
 
-      if (data.success && data.rates && data.rates[metalSymbol]) {
-        // API returns rates as currency per 1 oz of metal, we need to invert
-        const rate = 1 / data.rates[metalSymbol];
+      // Find the metal name from symbol
+      const metalName = Object.entries(GOLDPRICEZ_TO_SYMBOL)
+        .find(([_, sym]) => sym === metalSymbol)?.[0];
+
+      if (metalName && data[metalName as keyof GoldPriceZResponse]) {
+        const price = data[metalName as keyof GoldPriceZResponse] as number;
 
         return {
           metal: metalSymbol,
-          price: rate,
-          currency,
+          price,
+          currency: 'USD',
           unit: 'oz',
-          timestamp: data.timestamp || Date.now() / 1000,
+          timestamp: Date.now() / 1000,
         };
       }
     }
@@ -87,24 +102,29 @@ export async function getAllMetalPrices(
   const results = new Map<string, MetalPrice>();
 
   try {
-    const symbols = Object.values(METAL_SYMBOLS).join(',');
-    const response = await fetch(
-      `${BASE_URL}/latest?access_key=${METALS_API_KEY}&base=${currency}&symbols=${symbols}`
-    );
+    // Try GoldPriceZ API (free, no key required)
+    const response = await fetch(GOLDPRICEZ_URL);
 
     if (response.ok) {
-      const data = await response.json();
+      const data: GoldPriceZResponse = await response.json();
+      const timestamp = Date.now() / 1000;
 
-      if (data.success && data.rates) {
-        for (const [symbol, rate] of Object.entries(data.rates)) {
+      // Map GoldPriceZ response to our format
+      for (const [metalName, symbol] of Object.entries(GOLDPRICEZ_TO_SYMBOL)) {
+        const price = data[metalName as keyof GoldPriceZResponse] as number | undefined;
+
+        if (price) {
           results.set(symbol, {
             metal: symbol,
-            price: 1 / (rate as number),
-            currency,
+            price,
+            currency: 'USD',
             unit: 'oz',
-            timestamp: data.timestamp || Date.now() / 1000,
+            timestamp,
           });
         }
+      }
+
+      if (results.size > 0) {
         return results;
       }
     }

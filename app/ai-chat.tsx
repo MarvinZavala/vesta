@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,450 +9,851 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  FlatList,
+  Alert,
+  Dimensions,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { Card } from '@/components/ui';
 import { useTheme } from '@/hooks/useTheme';
 import { usePortfolioStore } from '@/store/portfolioStore';
 import { useAuthStore } from '@/store/authStore';
-import { formatCurrency, ASSET_TYPE_LABELS } from '@/utils/formatters';
-import { FontSize, FontWeight, Spacing, BorderRadius } from '@/constants/theme';
+import { ASSET_TYPE_LABELS } from '@/utils/formatters';
+import { FontSize, FontWeight, Spacing, BorderRadius, Shadow } from '@/constants/theme';
+import { sendAIMessage, isAIConfigured, getAIProvider } from '@/services/ai';
+import {
+  createChatSession,
+  getChatSessions,
+  getChatMessages,
+  addChatMessage,
+  deleteChatSession,
+} from '@/services/chatHistory';
+import { ChatSession } from '@/types/database';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withTiming,
+  interpolate,
+  withDelay,
+} from 'react-native-reanimated';
 
-interface Message {
+const { width: SCREEN_W } = Dimensions.get('window');
+
+interface LocalMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
 }
 
-const QUICK_PROMPTS = [
-  { icon: 'pie-chart', label: 'How diversified am I?', prompt: 'Analyze my portfolio diversification and give me recommendations.' },
-  { icon: 'warning', label: "What's my risk level?", prompt: 'What is my portfolio risk score and what factors contribute to it?' },
-  { icon: 'shuffle', label: 'Should I rebalance?', prompt: 'Do you recommend rebalancing my portfolio? If so, what changes should I make?' },
-  { icon: 'trending-up', label: 'Growth opportunities', prompt: 'Based on my current holdings, what growth opportunities should I consider?' },
+const SUGGESTIONS = [
+  {
+    icon: 'analytics' as const,
+    title: 'Portfolio Analysis',
+    desc: 'Allocation & performance review',
+    prompt: 'Analyze my portfolio allocation and performance. What stands out?',
+  },
+  {
+    icon: 'shield-checkmark' as const,
+    title: 'Risk Assessment',
+    desc: 'Evaluate exposure & volatility',
+    prompt: 'What is my current risk level and how can I manage it?',
+  },
+  {
+    icon: 'swap-horizontal' as const,
+    title: 'Rebalancing',
+    desc: 'Optimize your allocations',
+    prompt: 'Should I rebalance my portfolio? What changes would you suggest?',
+  },
+  {
+    icon: 'trending-up' as const,
+    title: 'Opportunities',
+    desc: 'Growth & diversification ideas',
+    prompt: 'What growth opportunities or diversification ideas do you see?',
+  },
 ];
 
-export default function AIChatScreen() {
+// --- Typing Dots (inline, no import needed from Skeleton) ---
+function TypingDots() {
+  const { colors, isDark } = useTheme();
+  return (
+    <View style={s.typingRow}>
+      <View style={[s.typingAvatarSmall, { backgroundColor: isDark ? 'rgba(16,185,129,0.15)' : 'rgba(5,150,105,0.08)' }]}>
+        <Ionicons name="sparkles" size={12} color={colors.primary} />
+      </View>
+      <View style={[s.typingBubble, { backgroundColor: isDark ? colors.backgroundSecondary : colors.backgroundTertiary }]}>
+        <PulsingDot delay={0} />
+        <PulsingDot delay={150} />
+        <PulsingDot delay={300} />
+      </View>
+    </View>
+  );
+}
+
+function PulsingDot({ delay }: { delay: number }) {
   const { colors } = useTheme();
+  const anim = useSharedValue(0);
+
+  useEffect(() => {
+    anim.value = withDelay(
+      delay,
+      withRepeat(withTiming(1, { duration: 600 }), -1, true)
+    );
+  }, []);
+
+  const style = useAnimatedStyle(() => ({
+    opacity: interpolate(anim.value, [0, 1], [0.25, 0.8]),
+    transform: [{ scale: interpolate(anim.value, [0, 1], [0.85, 1.15]) }],
+  }));
+
+  return (
+    <Animated.View
+      style={[{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: colors.primary }, style]}
+    />
+  );
+}
+
+// ============================================================
+export default function AIChatScreen() {
+  const { colors, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const router = useRouter();
+  const params = useLocalSearchParams<{ sessionId?: string }>();
   const scrollRef = useRef<ScrollView>(null);
-  const { profile } = useAuthStore();
+  const { profile, user } = useAuthStore();
   const { holdingsWithPrices, summary } = usePortfolioStore();
 
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
 
-  // Check if user has Premium+
   const isPremiumPlus = profile?.subscription_tier === 'premium_plus';
 
   useEffect(() => {
-    if (!isPremiumPlus) {
-      router.replace('/paywall');
-    }
+    if (!isPremiumPlus) router.replace('/paywall');
   }, [isPremiumPlus]);
 
-  // Build portfolio context for AI
-  const buildPortfolioContext = () => {
-    const context = {
-      totalValue: formatCurrency(summary?.total_value ?? 0),
-      totalGainLoss: formatCurrency(summary?.total_gain_loss ?? 0),
-      holdingsCount: holdingsWithPrices.length,
-      holdings: holdingsWithPrices.map(h => ({
-        name: h.symbol || h.name,
-        type: ASSET_TYPE_LABELS[h.asset_type],
-        value: formatCurrency(h.current_value),
-        allocation: summary?.total_value ? ((h.current_value / summary.total_value) * 100).toFixed(1) + '%' : '0%',
-        gainLoss: formatCurrency(h.gain_loss),
-      })),
-      allocationByType: summary?.allocation_by_type,
+  useEffect(() => {
+    if (user?.id) loadSessions();
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (params.sessionId) loadSession(params.sessionId);
+  }, [params.sessionId]);
+
+  const loadSessions = async () => {
+    if (!user?.id) return;
+    setLoadingSessions(true);
+    const data = await getChatSessions(user.id);
+    setSessions(data);
+    setLoadingSessions(false);
+  };
+
+  const loadSession = async (sessionId: string) => {
+    const chatMessages = await getChatMessages(sessionId);
+    setCurrentSessionId(sessionId);
+    setMessages(
+      chatMessages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        timestamp: new Date(m.created_at),
+      }))
+    );
+    setShowHistory(false);
+  };
+
+  const startNewChat = () => {
+    setCurrentSessionId(null);
+    setMessages([]);
+    setShowHistory(false);
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    Alert.alert('Delete Conversation', 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          await deleteChatSession(sessionId);
+          if (currentSessionId === sessionId) startNewChat();
+          loadSessions();
+        },
+      },
+    ]);
+  };
+
+  const buildPortfolioContext = useCallback(() => {
+    const totalValue = summary?.total_value ?? 0;
+    const totalGainLoss = summary?.total_gain_loss ?? 0;
+    const totalGainLossPercent =
+      totalValue > 0 ? (totalGainLoss / (totalValue - totalGainLoss)) * 100 : 0;
+    return {
+      totalValue,
+      totalGainLoss,
+      totalGainLossPercent,
+      holdings: holdingsWithPrices.map((h) => {
+        const costBasis = h.cost_basis ?? 0;
+        return {
+          name: h.name,
+          symbol: h.symbol ?? undefined,
+          type: ASSET_TYPE_LABELS[h.asset_type] || h.asset_type,
+          value: h.current_value,
+          allocation: totalValue > 0 ? (h.current_value / totalValue) * 100 : 0,
+          gainLoss: h.gain_loss,
+          gainLossPercent: costBasis > 0 ? ((h.current_value - costBasis) / costBasis) * 100 : 0,
+        };
+      }),
+      allocationByType: summary?.allocation_by_type ?? {},
       allocationBySector: summary?.allocation_by_sector,
       allocationByCountry: summary?.allocation_by_country,
     };
-    return JSON.stringify(context, null, 2);
-  };
+  }, [holdingsWithPrices, summary]);
 
-  // Simulate AI response (In real app, call OpenAI via Supabase Edge Function)
-  const generateAIResponse = async (userMessage: string): Promise<string> => {
-    // Simulate API delay
-    await new Promise(resolve => setTimeout(resolve, 1500 + Math.random() * 1000));
-
-    const context = buildPortfolioContext();
-
-    // Mock responses based on keywords
-    if (userMessage.toLowerCase().includes('diversif')) {
-      return `Based on your portfolio analysis, here's my assessment:
-
-**Diversification Score: 65/100**
-
-**Strengths:**
-- You have ${holdingsWithPrices.length} different assets
-- Mix of asset types is reasonable
-
-**Areas for Improvement:**
-${summary?.allocation_by_type && Object.entries(summary.allocation_by_type)
-  .filter(([_, v]) => v > 40)
-  .map(([type, _]) => `- High concentration in ${ASSET_TYPE_LABELS[type] || type}`)
-  .join('\n') || '- Consider adding more asset variety'}
-
-**Recommendations:**
-1. Consider adding international exposure
-2. Look into bonds for stability
-3. Diversify across more sectors
-
-*This is educational information, not financial advice.*`;
-    }
-
-    if (userMessage.toLowerCase().includes('risk')) {
-      const riskScore = Math.floor(40 + Math.random() * 30);
-      return `**Portfolio Risk Assessment**
-
-Your estimated risk score is **${riskScore}/100** (${riskScore < 40 ? 'Low' : riskScore < 70 ? 'Moderate' : 'High'} Risk)
-
-**Risk Factors:**
-- Asset concentration level
-- Market volatility exposure
-- Geographic concentration
-
-**Risk Mitigation Suggestions:**
-1. Add fixed-income assets for stability
-2. Consider hedging strategies
-3. Maintain emergency cash reserves
-
-*Remember: Higher risk can mean higher potential returns, but also greater potential losses.*`;
-    }
-
-    if (userMessage.toLowerCase().includes('rebalanc')) {
-      return `**Rebalancing Analysis**
-
-Based on your current allocation, here are my thoughts:
-
-**Current State:**
-${holdingsWithPrices.slice(0, 3).map(h =>
-  `- ${h.symbol || h.name}: ${summary?.total_value ? ((h.current_value / summary.total_value) * 100).toFixed(1) : 0}%`
-).join('\n')}
-
-**Suggested Actions:**
-1. Review any positions over 25% allocation
-2. Consider trimming winners to lock in gains
-3. Look for underweight sectors to add to
-
-**When to Rebalance:**
-- When allocation drifts 5%+ from target
-- Quarterly or semi-annually
-- After major life events
-
-*Always consider tax implications before rebalancing.*`;
-    }
-
-    // Default response
-    return `Thank you for your question about your portfolio.
-
-Based on my analysis of your ${holdingsWithPrices.length} holdings worth ${formatCurrency(summary?.total_value ?? 0)}:
-
-Your portfolio shows a ${(summary?.total_gain_loss ?? 0) >= 0 ? 'positive' : 'negative'} overall return of ${formatCurrency(Math.abs(summary?.total_gain_loss ?? 0))}.
-
-Would you like me to analyze a specific aspect? Try asking about:
-- Diversification analysis
-- Risk assessment
-- Rebalancing suggestions
-
-*This is educational information, not financial advice. Please consult a financial advisor for personalized guidance.*`;
-  };
+  const aiConfigured = isAIConfigured();
+  const aiProvider = getAIProvider();
 
   const handleSend = async (text?: string) => {
     const messageText = text || inputText.trim();
-    if (!messageText || isLoading) return;
-
+    if (!messageText || isLoading || !user?.id) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    const userMessage: Message = {
+    let sessionId = currentSessionId;
+    if (!sessionId) {
+      const session = await createChatSession(user.id, messageText);
+      if (session) {
+        sessionId = session.id;
+        setCurrentSessionId(sessionId);
+        loadSessions();
+      }
+    }
+
+    const userMessage: LocalMessage = {
       id: Date.now().toString(),
       role: 'user',
       content: messageText,
       timestamp: new Date(),
     };
-
-    setMessages(prev => [...prev, userMessage]);
+    setMessages((prev) => [...prev, userMessage]);
     setInputText('');
     setIsLoading(true);
 
-    try {
-      const response = await generateAIResponse(messageText);
+    if (sessionId) await addChatMessage(sessionId, 'user', messageText);
 
-      const assistantMessage: Message = {
+    try {
+      const history = messages.map((m) => ({ role: m.role, content: m.content }));
+      const ctx = buildPortfolioContext();
+      const response = await sendAIMessage(messageText, ctx, history);
+
+      const assistantMessage: LocalMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: response,
         timestamp: new Date(),
       };
-
-      setMessages(prev => [...prev, assistantMessage]);
+      setMessages((prev) => [...prev, assistantMessage]);
+      if (sessionId) await addChatMessage(sessionId, 'assistant', response);
     } catch (error) {
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: 'Sorry, I encountered an error. Please try again.',
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      console.error('AI Chat error:', error);
+      setMessages((prev) => [
+        ...prev,
+        { id: (Date.now() + 1).toString(), role: 'assistant', content: 'Something went wrong. Please try again.', timestamp: new Date() },
+      ]);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    scrollRef.current?.scrollToEnd({ animated: true });
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   }, [messages]);
 
-  return (
-    <KeyboardAvoidingView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={100}
-    >
-      <ScrollView
-        ref={scrollRef}
-        style={styles.messagesContainer}
-        contentContainerStyle={styles.messagesContent}
-      >
-        {messages.length === 0 ? (
-          <Animated.View entering={FadeIn.duration(600)} style={styles.welcomeContainer}>
-            <View style={[styles.aiAvatar, { backgroundColor: colors.primary }]}>
-              <Ionicons name="sparkles" size={32} color="#FFFFFF" />
-            </View>
-            <Text style={[styles.welcomeTitle, { color: colors.text }]}>
-              Hi! I'm Vesta AI
-            </Text>
-            <Text style={[styles.welcomeSubtitle, { color: colors.textSecondary }]}>
-              Your personal portfolio advisor. Ask me anything about your investments.
-            </Text>
+  // ── Format time ─────────────────────────────────
+  const formatTime = (date: Date) => {
+    const h = date.getHours();
+    const m = date.getMinutes().toString().padStart(2, '0');
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    return `${h % 12 || 12}:${m} ${ampm}`;
+  };
 
-            <Text style={[styles.quickPromptsTitle, { color: colors.text }]}>
-              Quick questions:
-            </Text>
-            <View style={styles.quickPrompts}>
-              {QUICK_PROMPTS.map((item, index) => (
-                <TouchableOpacity
-                  key={index}
-                  style={[
-                    styles.quickPrompt,
-                    { backgroundColor: colors.backgroundSecondary, borderColor: colors.border },
-                  ]}
-                  onPress={() => handleSend(item.prompt)}
-                >
-                  <Ionicons name={item.icon as any} size={18} color={colors.primary} />
-                  <Text style={[styles.quickPromptText, { color: colors.text }]}>
-                    {item.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </Animated.View>
-        ) : (
-          messages.map((message, index) => (
-            <Animated.View
-              key={message.id}
-              entering={FadeInDown.delay(index === messages.length - 1 ? 0 : 0).duration(300)}
-              style={[
-                styles.messageBubble,
-                message.role === 'user'
-                  ? [styles.userBubble, { backgroundColor: colors.primary }]
-                  : [styles.assistantBubble, { backgroundColor: colors.backgroundSecondary }],
-              ]}
-            >
-              {message.role === 'assistant' && (
-                <View style={styles.assistantHeader}>
-                  <Ionicons name="sparkles" size={16} color={colors.primary} />
-                  <Text style={[styles.assistantLabel, { color: colors.primary }]}>
-                    Vesta AI
-                  </Text>
-                </View>
-              )}
-              <Text
-                style={[
-                  styles.messageText,
-                  { color: message.role === 'user' ? '#FFFFFF' : colors.text },
-                ]}
-              >
-                {message.content}
-              </Text>
-            </Animated.View>
-          ))
-        )}
+  // ── History View ────────────────────────────────
+  if (showHistory) {
+    return (
+      <View style={[s.screen, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+        {/* History Header */}
+        <View style={s.header}>
+          <TouchableOpacity onPress={() => setShowHistory(false)} style={s.headerBtn} hitSlop={12}>
+            <Ionicons name="chevron-back" size={22} color={colors.text} />
+          </TouchableOpacity>
+          <Text style={[s.headerTitle, { color: colors.text }]}>History</Text>
+          <TouchableOpacity onPress={startNewChat} style={s.headerBtn} hitSlop={12}>
+            <Ionicons name="add-circle-outline" size={22} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
 
-        {isLoading && (
-          <View style={[styles.loadingBubble, { backgroundColor: colors.backgroundSecondary }]}>
-            <ActivityIndicator size="small" color={colors.primary} />
-            <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
-              Analyzing your portfolio...
+        {loadingSessions ? (
+          <ActivityIndicator style={{ marginTop: Spacing.xxl }} color={colors.primary} />
+        ) : sessions.length === 0 ? (
+          <View style={s.emptyHistory}>
+            <View style={[s.emptyHistoryIcon, { backgroundColor: isDark ? 'rgba(16,185,129,0.1)' : 'rgba(5,150,105,0.06)' }]}>
+              <Ionicons name="chatbubbles-outline" size={32} color={colors.primary} />
+            </View>
+            <Text style={[s.emptyHistoryTitle, { color: colors.text }]}>No Conversations</Text>
+            <Text style={[s.emptyHistorySub, { color: colors.textSecondary }]}>
+              Start a new chat to get AI-powered insights
             </Text>
           </View>
-        )}
-      </ScrollView>
-
-      {/* Input */}
-      <View style={[styles.inputContainer, { backgroundColor: colors.card, borderTopColor: colors.border }]}>
-        <View
-          style={[
-            styles.inputWrapper,
-            { backgroundColor: colors.backgroundSecondary, borderColor: colors.border },
-          ]}
-        >
-          <TextInput
-            style={[styles.input, { color: colors.text }]}
-            placeholder="Ask about your portfolio..."
-            placeholderTextColor={colors.textTertiary}
-            value={inputText}
-            onChangeText={setInputText}
-            multiline
-            maxLength={500}
+        ) : (
+          <FlatList
+            data={sessions}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={{ padding: Spacing.lg, gap: Spacing.sm }}
+            renderItem={({ item }) => {
+              const isActive = item.id === currentSessionId;
+              return (
+                <TouchableOpacity
+                  activeOpacity={0.6}
+                  onPress={() => loadSession(item.id)}
+                  onLongPress={() => handleDeleteSession(item.id)}
+                  delayLongPress={500}
+                >
+                  <View
+                    style={[
+                      s.historyCard,
+                      {
+                        backgroundColor: isActive
+                          ? isDark ? 'rgba(16,185,129,0.1)' : 'rgba(5,150,105,0.06)'
+                          : colors.card,
+                        borderColor: isActive ? colors.primary : 'transparent',
+                        ...(!isActive ? Shadow.sm : {}),
+                      },
+                    ]}
+                  >
+                    <View style={[s.historyIconBox, { backgroundColor: isDark ? 'rgba(16,185,129,0.12)' : 'rgba(5,150,105,0.06)' }]}>
+                      <Ionicons name="chatbubble" size={14} color={colors.primary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[s.historyItemTitle, { color: colors.text }]} numberOfLines={1}>
+                        {item.title}
+                      </Text>
+                      <Text style={[s.historyItemDate, { color: colors.textTertiary }]}>
+                        {new Date(item.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
+                  </View>
+                </TouchableOpacity>
+              );
+            }}
           />
+        )}
+      </View>
+    );
+  }
+
+  // ── Main Chat View ──────────────────────────────
+  return (
+    <View style={[s.screen, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+      {/* Header */}
+      <View style={s.header}>
+        <TouchableOpacity onPress={() => router.back()} style={s.headerBtn} hitSlop={12}>
+          <Ionicons name="chevron-back" size={22} color={colors.text} />
+        </TouchableOpacity>
+        <View style={s.headerCenter}>
+          <View style={[s.headerDot, { backgroundColor: colors.primary }]}>
+            <Ionicons name="sparkles" size={10} color="#FFF" />
+          </View>
+          <Text style={[s.headerTitle, { color: colors.text }]}>Vesta AI</Text>
+        </View>
+        <View style={s.headerActions}>
           <TouchableOpacity
-            style={[
-              styles.sendButton,
-              {
-                backgroundColor: inputText.trim() ? colors.primary : colors.backgroundTertiary,
-              },
-            ]}
-            onPress={() => handleSend()}
-            disabled={!inputText.trim() || isLoading}
+            onPress={() => { loadSessions(); setShowHistory(true); }}
+            style={s.headerBtn}
+            hitSlop={12}
           >
-            <Ionicons
-              name="arrow-up"
-              size={20}
-              color={inputText.trim() ? '#FFFFFF' : colors.textTertiary}
-            />
+            <Ionicons name="time-outline" size={20} color={colors.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={startNewChat} style={s.headerBtn} hitSlop={12}>
+            <Ionicons name="create-outline" size={20} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
       </View>
-    </KeyboardAvoidingView>
+
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={0}
+      >
+        <ScrollView
+          ref={scrollRef}
+          style={{ flex: 1 }}
+          contentContainerStyle={[s.messagesContent, messages.length === 0 && { flexGrow: 1 }]}
+          keyboardShouldPersistTaps="handled"
+        >
+          {messages.length === 0 ? (
+            /* ── Welcome / Empty State ── */
+            <View style={s.welcome}>
+              <LinearGradient
+                colors={isDark
+                  ? ['rgba(16,185,129,0.15)', 'rgba(16,185,129,0.03)']
+                  : ['rgba(5,150,105,0.08)', 'rgba(5,150,105,0.01)']}
+                style={s.welcomeGlow}
+              />
+              <View style={[s.welcomeAvatar]}>
+                <LinearGradient
+                  colors={isDark ? ['#10B981', '#059669'] : ['#059669', '#047857']}
+                  style={s.welcomeAvatarGradient}
+                >
+                  <Ionicons name="sparkles" size={30} color="#FFF" />
+                </LinearGradient>
+              </View>
+
+              <Text style={[s.welcomeTitle, { color: colors.text }]}>
+                Vesta AI
+              </Text>
+              <Text style={[s.welcomeSub, { color: colors.textSecondary }]}>
+                Your personal portfolio advisor.{'\n'}Ask anything about your investments.
+              </Text>
+
+              {/* Provider badge */}
+              <View style={[
+                s.providerBadge,
+                { backgroundColor: isDark ? 'rgba(16,185,129,0.1)' : 'rgba(5,150,105,0.06)' },
+              ]}>
+                <View style={[s.providerDot, { backgroundColor: aiConfigured ? colors.gain : colors.warning }]} />
+                <Text style={[s.providerText, { color: colors.textSecondary }]}>
+                  {aiConfigured ? (aiProvider === 'claude' ? 'Powered by Claude' : 'Powered by OpenAI') : 'Demo Mode'}
+                </Text>
+              </View>
+
+              {/* Suggestion Cards */}
+              <View style={s.suggestionsGrid}>
+                {SUGGESTIONS.map((item, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    activeOpacity={0.7}
+                    style={[
+                      s.suggestionCard,
+                      {
+                        backgroundColor: colors.card,
+                        borderColor: isDark ? colors.border : 'rgba(0,0,0,0.04)',
+                        ...(isDark ? {} : Shadow.sm),
+                      },
+                    ]}
+                    onPress={() => handleSend(item.prompt)}
+                  >
+                    <View style={[s.suggestionIcon, { backgroundColor: isDark ? 'rgba(16,185,129,0.12)' : 'rgba(5,150,105,0.06)' }]}>
+                      <Ionicons name={item.icon as any} size={18} color={colors.primary} />
+                    </View>
+                    <Text style={[s.suggestionTitle, { color: colors.text }]} numberOfLines={1}>
+                      {item.title}
+                    </Text>
+                    <Text style={[s.suggestionDesc, { color: colors.textTertiary }]} numberOfLines={1}>
+                      {item.desc}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          ) : (
+            /* ── Messages ── */
+            messages.map((msg, idx) => {
+              const isUser = msg.role === 'user';
+              const showTime =
+                idx === 0 ||
+                msg.timestamp.getTime() - messages[idx - 1].timestamp.getTime() > 5 * 60 * 1000;
+
+              return (
+                <View key={msg.id}>
+                  {showTime && (
+                    <Text style={[s.msgTime, { color: colors.textTertiary }]}>
+                      {formatTime(msg.timestamp)}
+                    </Text>
+                  )}
+                  {isUser ? (
+                    <View style={s.userRow}>
+                      <View style={[s.userBubble, { backgroundColor: colors.primary }]}>
+                        <Text style={s.userText}>{msg.content}</Text>
+                      </View>
+                    </View>
+                  ) : (
+                    <View style={s.assistantRow}>
+                      <View style={[s.assistantAvatarSmall, { backgroundColor: isDark ? 'rgba(16,185,129,0.15)' : 'rgba(5,150,105,0.08)' }]}>
+                        <Ionicons name="sparkles" size={12} color={colors.primary} />
+                      </View>
+                      <View style={[s.assistantBubble, { backgroundColor: isDark ? colors.backgroundSecondary : colors.backgroundTertiary }]}>
+                        <Text style={[s.assistantText, { color: colors.text }]}>{msg.content}</Text>
+                      </View>
+                    </View>
+                  )}
+                </View>
+              );
+            })
+          )}
+
+          {isLoading && <TypingDots />}
+        </ScrollView>
+
+        {/* ── Input Bar ── */}
+        <View
+          style={[
+            s.inputBar,
+            {
+              backgroundColor: colors.background,
+              borderTopColor: isDark ? colors.border : 'rgba(0,0,0,0.06)',
+              paddingBottom: Math.max(insets.bottom, 12),
+            },
+          ]}
+        >
+          <View
+            style={[
+              s.inputPill,
+              {
+                backgroundColor: isDark ? colors.backgroundSecondary : colors.backgroundTertiary,
+              },
+            ]}
+          >
+            <TextInput
+              style={[s.input, { color: colors.text }]}
+              placeholder="Ask about your portfolio..."
+              placeholderTextColor={colors.textTertiary}
+              value={inputText}
+              onChangeText={setInputText}
+              multiline
+              maxLength={500}
+            />
+            <TouchableOpacity
+              style={[
+                s.sendBtn,
+                {
+                  backgroundColor: inputText.trim() ? colors.primary : isDark ? colors.backgroundTertiary : colors.border,
+                },
+              ]}
+              onPress={() => handleSend()}
+              disabled={!inputText.trim() || isLoading}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="arrow-up"
+                size={18}
+                color={inputText.trim() ? '#FFF' : colors.textTertiary}
+              />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
+// ── Styles ──────────────────────────────────────────
+const s = StyleSheet.create({
+  screen: {
     flex: 1,
   },
-  messagesContainer: {
-    flex: 1,
-  },
-  messagesContent: {
-    padding: Spacing.md,
-    paddingBottom: Spacing.xl,
-  },
-  welcomeContainer: {
-    alignItems: 'center',
-    paddingTop: Spacing.xl,
-  },
-  aiAvatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: Spacing.md,
-  },
-  welcomeTitle: {
-    fontSize: FontSize.xxl,
-    fontWeight: FontWeight.bold,
-    marginBottom: Spacing.xs,
-  },
-  welcomeSubtitle: {
-    fontSize: FontSize.md,
-    textAlign: 'center',
-    paddingHorizontal: Spacing.lg,
-    marginBottom: Spacing.xl,
-  },
-  quickPromptsTitle: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-    marginBottom: Spacing.md,
-    alignSelf: 'flex-start',
-  },
-  quickPrompts: {
-    width: '100%',
-    gap: Spacing.sm,
-  },
-  quickPrompt: {
+
+  // ── Header ──
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: Spacing.md,
-    borderRadius: BorderRadius.md,
-    borderWidth: 1,
-    gap: Spacing.sm,
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md,
+    height: 48,
   },
-  quickPromptText: {
-    fontSize: FontSize.md,
-    flex: 1,
+  headerBtn: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  messageBubble: {
-    maxWidth: '85%',
-    padding: Spacing.md,
-    borderRadius: BorderRadius.lg,
+  headerCenter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  headerDot: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: -0.3,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+
+  // ── Messages ──
+  messagesContent: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.md,
+  },
+  msgTime: {
+    fontSize: 11,
+    fontWeight: FontWeight.medium,
+    textAlign: 'center',
+    marginVertical: Spacing.md,
+    letterSpacing: 0.2,
+  },
+
+  // User
+  userRow: {
+    alignItems: 'flex-end',
     marginBottom: Spacing.sm,
   },
   userBubble: {
-    alignSelf: 'flex-end',
-    borderBottomRightRadius: Spacing.xs,
+    maxWidth: '82%',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 11,
+    borderRadius: 20,
+    borderBottomRightRadius: 6,
   },
-  assistantBubble: {
-    alignSelf: 'flex-start',
-    borderBottomLeftRadius: Spacing.xs,
-  },
-  assistantHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    marginBottom: Spacing.xs,
-  },
-  assistantLabel: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.semibold,
-  },
-  messageText: {
+  userText: {
+    color: '#FFF',
     fontSize: FontSize.md,
     lineHeight: 22,
+    letterSpacing: -0.1,
   },
-  loadingBubble: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    padding: Spacing.md,
-    borderRadius: BorderRadius.lg,
-    gap: Spacing.sm,
-  },
-  loadingText: {
-    fontSize: FontSize.sm,
-  },
-  inputContainer: {
-    padding: Spacing.md,
-    borderTopWidth: 1,
-  },
-  inputWrapper: {
+
+  // Assistant
+  assistantRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
+    gap: 8,
+    marginBottom: Spacing.sm,
+  },
+  assistantAvatarSmall: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  assistantBubble: {
+    maxWidth: '78%',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 11,
+    borderRadius: 20,
+    borderBottomLeftRadius: 6,
+  },
+  assistantText: {
+    fontSize: FontSize.md,
+    lineHeight: 22,
+    letterSpacing: -0.1,
+  },
+
+  // Typing
+  typingRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    marginBottom: Spacing.sm,
+  },
+  typingAvatarSmall: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  typingBubble: {
+    flexDirection: 'row',
+    gap: 5,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 20,
+    borderBottomLeftRadius: 6,
+    alignItems: 'center',
+  },
+
+  // ── Welcome ──
+  welcome: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.md,
+  },
+  welcomeGlow: {
+    position: 'absolute',
+    top: -40,
+    width: 260,
+    height: 260,
+    borderRadius: 130,
+    opacity: 0.8,
+  },
+  welcomeAvatar: {
+    marginBottom: Spacing.md,
+  },
+  welcomeAvatarGradient: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  welcomeTitle: {
+    fontSize: 26,
+    fontWeight: FontWeight.bold,
+    letterSpacing: -0.8,
+    marginBottom: 6,
+  },
+  welcomeSub: {
+    fontSize: FontSize.md,
+    lineHeight: 22,
+    textAlign: 'center',
+    marginBottom: Spacing.md,
+    letterSpacing: -0.1,
+  },
+  providerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
+    marginBottom: Spacing.xl,
+  },
+  providerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  providerText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.medium,
+  },
+
+  // Suggestion cards
+  suggestionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    width: '100%',
+    maxWidth: 380,
+  },
+  suggestionCard: {
+    width: (SCREEN_W - Spacing.lg * 2 - Spacing.md * 2 - 10) / 2,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 6,
+  },
+  suggestionIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  suggestionTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: -0.2,
+  },
+  suggestionDesc: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+
+  // ── Input ──
+  inputBar: {
+    paddingTop: 10,
+    paddingHorizontal: Spacing.lg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  inputPill: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    borderRadius: 24,
+    paddingLeft: Spacing.md,
+    paddingRight: 5,
+    paddingVertical: 5,
+    minHeight: 46,
   },
   input: {
     flex: 1,
     fontSize: FontSize.md,
     maxHeight: 100,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.sm,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 6,
+    lineHeight: 20,
+    letterSpacing: -0.1,
   },
-  sendButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  sendBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: Spacing.xs,
+  },
+
+  // ── History ──
+  emptyHistory: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingBottom: 80,
+  },
+  emptyHistoryIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  emptyHistoryTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: -0.3,
+  },
+  emptyHistorySub: {
+    fontSize: FontSize.sm,
+    textAlign: 'center',
+    maxWidth: 240,
+  },
+  historyCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    gap: 12,
+  },
+  historyIconBox: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  historyItemTitle: {
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.medium,
+    letterSpacing: -0.2,
+    marginBottom: 2,
+  },
+  historyItemDate: {
+    fontSize: FontSize.xs,
   },
 });

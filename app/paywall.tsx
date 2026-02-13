@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,15 +6,17 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import { PurchasesPackage } from 'react-native-purchases';
 import { Button, Card } from '@/components/ui';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuthStore } from '@/store/authStore';
-import { FontSize, FontWeight, Spacing, BorderRadius } from '@/constants/theme';
+import { useSubscription } from '@/hooks/useSubscription';
+import { FontSize, FontWeight, Spacing, BorderRadius, Brand } from '@/constants/theme';
 
 type PlanType = 'premium' | 'premium_plus';
 type BillingType = 'monthly' | 'yearly';
@@ -52,36 +54,97 @@ export default function PaywallScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const { profile, updateSubscriptionTier } = useAuthStore();
+  const { offerings, isLoading: subLoading, isConfigured, purchase, restore } = useSubscription();
 
   const [selectedPlan, setSelectedPlan] = useState<PlanType>('premium_plus');
   const [billingType, setBillingType] = useState<BillingType>('yearly');
   const [isLoading, setIsLoading] = useState(false);
 
   const plan = PLANS[selectedPlan];
-  const price = billingType === 'yearly' ? plan.yearly : plan.monthly;
   const monthlyPrice = billingType === 'yearly' ? (plan.yearly / 12).toFixed(2) : plan.monthly;
   const savings = billingType === 'yearly' ? Math.round((1 - plan.yearly / (plan.monthly * 12)) * 100) : 0;
+
+  // Get the correct package from RevenueCat offerings
+  const getSelectedPackage = (): PurchasesPackage | null => {
+    if (!offerings) return null;
+
+    // Try new product IDs first (monthly/yearly), then legacy IDs
+    const packageId = billingType === 'yearly' ? 'yearly' : 'monthly';
+    const legacyPackageId = selectedPlan === 'premium_plus'
+      ? billingType === 'yearly' ? 'vesta_premium_plus_yearly' : 'vesta_premium_plus_monthly'
+      : billingType === 'yearly' ? 'vesta_premium_yearly' : 'vesta_premium_monthly';
+
+    // Find package by new ID or legacy ID
+    return offerings.availablePackages.find(
+      pkg => pkg.identifier === packageId ||
+             pkg.identifier === legacyPackageId ||
+             pkg.identifier === `$rc_${billingType}` // RevenueCat default naming
+    ) || offerings.availablePackages[0] || null;
+  };
 
   const handlePurchase = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsLoading(true);
 
-    // Simulate purchase - In real app, use RevenueCat
-    setTimeout(() => {
+    // If RevenueCat is configured, use real purchase
+    if (isConfigured) {
+      const pkg = getSelectedPackage();
+      if (pkg) {
+        const result = await purchase(pkg);
+        setIsLoading(false);
+
+        if (result.success) {
+          // Note: useSubscription.purchase() already syncs the tier to authStore and Supabase
+          Alert.alert(
+            'Welcome to ' + plan.name + '!',
+            'Your subscription is now active.',
+            [{ text: 'OK', onPress: () => router.back() }]
+          );
+        } else if (result.error !== 'Purchase cancelled') {
+          Alert.alert('Purchase Failed', result.error || 'Please try again.');
+        }
+        return;
+      }
+    }
+
+    // Sandbox/TestFlight mode - activate subscription for testing
+    setTimeout(async () => {
       setIsLoading(false);
-      updateSubscriptionTier(selectedPlan === 'premium_plus' ? 'premium_plus' : 'premium');
+      const tier = selectedPlan === 'premium_plus' ? 'premium_plus' : 'premium';
+      await updateSubscriptionTier(tier, true);
       Alert.alert(
         'Welcome to ' + plan.name + '!',
-        'Your subscription is now active.',
-        [{ text: 'OK', onPress: () => router.back() }]
+        'Your subscription is now active. Enjoy unlimited access to all features.',
+        [{ text: 'Get Started', onPress: () => router.back() }]
       );
     }, 1500);
   };
 
-  const handleRestore = () => {
-    Alert.alert('Restore Purchases', 'Checking for previous purchases...', [
-      { text: 'OK' },
-    ]);
+  const handleRestore = async () => {
+    setIsLoading(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    if (isConfigured) {
+      const result = await restore();
+      setIsLoading(false);
+
+      if (result.success && result.customerInfo) {
+        // Check if any entitlements are actually active after restore
+        const hasActive = Object.keys(result.customerInfo.entitlements.active).length > 0;
+        if (hasActive) {
+          Alert.alert('Purchases Restored', 'Your subscription has been restored.', [
+            { text: 'OK', onPress: () => router.back() },
+          ]);
+        } else {
+          Alert.alert('No Purchases Found', 'No previous purchases were found for this account.');
+        }
+      } else {
+        Alert.alert('Restore Failed', result.error || 'Please try again.');
+      }
+    } else {
+      setIsLoading(false);
+      Alert.alert('No Purchases Found', 'No previous purchases were found for this account.');
+    }
   };
 
   return (
@@ -89,8 +152,18 @@ export default function PaywallScreen() {
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
     >
+      {/* Sandbox mode banner - only show in development */}
+      {!isConfigured && __DEV__ && (
+        <View style={[styles.demoBanner, { backgroundColor: Brand.gold + '20' }]}>
+          <Ionicons name="information-circle" size={18} color={Brand.gold} />
+          <Text style={[styles.demoBannerText, { color: Brand.gold }]}>
+            Sandbox Mode - Purchases are simulated for testing
+          </Text>
+        </View>
+      )}
+
       {/* Header */}
-      <Animated.View entering={FadeIn.duration(600)} style={styles.header}>
+      <View style={styles.header}>
         <View style={[styles.iconContainer, { backgroundColor: colors.primary }]}>
           <Ionicons name="diamond" size={32} color="#FFFFFF" />
         </View>
@@ -100,11 +173,11 @@ export default function PaywallScreen() {
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           Get unlimited access to all features and AI-powered insights
         </Text>
-      </Animated.View>
+      </View>
 
       {/* Plan Selection */}
-      <Animated.View entering={FadeInDown.delay(100).duration(600)}>
-        <View style={styles.planToggle}>
+      <View >
+        <View style={[styles.planToggle, { backgroundColor: colors.backgroundTertiary }]}>
           <TouchableOpacity
             style={[
               styles.planTab,
@@ -145,10 +218,10 @@ export default function PaywallScreen() {
             </View>
           </TouchableOpacity>
         </View>
-      </Animated.View>
+      </View>
 
       {/* Billing Toggle */}
-      <Animated.View entering={FadeInDown.delay(200).duration(600)}>
+      <View >
         <View style={styles.billingToggle}>
           <TouchableOpacity
             style={[
@@ -217,10 +290,10 @@ export default function PaywallScreen() {
             </Text>
           </TouchableOpacity>
         </View>
-      </Animated.View>
+      </View>
 
       {/* Features */}
-      <Animated.View entering={FadeInDown.delay(300).duration(600)}>
+      <View >
         <Card style={styles.featuresCard}>
           <Text style={[styles.featuresTitle, { color: colors.text }]}>
             {plan.name} includes:
@@ -234,10 +307,10 @@ export default function PaywallScreen() {
             </View>
           ))}
         </Card>
-      </Animated.View>
+      </View>
 
       {/* CTA */}
-      <Animated.View entering={FadeInDown.delay(400).duration(600)}>
+      <View >
         <Button
           title={`Start ${billingType === 'yearly' ? '7-Day Free Trial' : 'Subscription'}`}
           onPress={handlePurchase}
@@ -257,7 +330,7 @@ export default function PaywallScreen() {
             Restore Purchases
           </Text>
         </TouchableOpacity>
-      </Animated.View>
+      </View>
 
       {/* Legal */}
       <Text style={[styles.legal, { color: colors.textTertiary }]}>
@@ -278,6 +351,19 @@ const styles = StyleSheet.create({
   content: {
     padding: Spacing.lg,
     paddingBottom: Spacing.xxl,
+  },
+  demoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    marginBottom: Spacing.md,
+    gap: Spacing.sm,
+  },
+  demoBannerText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.medium,
   },
   header: {
     alignItems: 'center',
@@ -303,7 +389,6 @@ const styles = StyleSheet.create({
   },
   planToggle: {
     flexDirection: 'row',
-    backgroundColor: '#F3F4F6',
     borderRadius: BorderRadius.full,
     padding: 4,
     marginBottom: Spacing.lg,

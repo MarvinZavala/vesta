@@ -2,7 +2,6 @@ import 'react-native-url-polyfill/auto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 
-// TODO: Replace with your Supabase project URL and anon key
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
 
@@ -15,21 +14,29 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
-// Auth helpers
 export async function signUp(email: string, password: string) {
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-  });
-  return { data, error };
+  try {
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    return { data, error };
+  } catch (e: any) {
+    const msg = e?.message?.includes('JSON')
+      ? 'Service temporarily unavailable. Please try again in a moment.'
+      : (e?.message || 'An unexpected error occurred');
+    return { data: { user: null, session: null }, error: { message: msg, status: 503 } as any };
+  }
 }
 
 export async function signIn(email: string, password: string) {
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  });
-  return { data, error };
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    return { data, error };
+  } catch (e: any) {
+    // Supabase outage returns HTML instead of JSON → parse error
+    const msg = e?.message?.includes('JSON')
+      ? 'Service temporarily unavailable. Please try again in a moment.'
+      : (e?.message || 'An unexpected error occurred');
+    return { data: { user: null, session: null }, error: { message: msg, status: 503 } as any };
+  }
 }
 
 export async function signOut() {
@@ -43,8 +50,15 @@ export async function resetPassword(email: string) {
 }
 
 export async function getSession() {
-  const { data, error } = await supabase.auth.getSession();
-  return { session: data.session, error };
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    return { session: data.session, error };
+  } catch (e: any) {
+    const msg = e?.message?.includes('JSON')
+      ? 'Service temporarily unavailable. Please try again in a moment.'
+      : (e?.message || 'An unexpected error occurred');
+    return { session: null, error: { message: msg, status: 503 } as any };
+  }
 }
 
 export async function getCurrentUser() {

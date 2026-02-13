@@ -3,15 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
   Alert,
 } from 'react-native';
-import { Link, useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Link } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Button, Input } from '@/components/ui';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuthStore } from '@/store/authStore';
@@ -19,7 +18,6 @@ import { FontSize, FontWeight, Spacing } from '@/constants/theme';
 
 export default function SignInScreen() {
   const { colors, isDark } = useTheme();
-  const router = useRouter();
   const { login, isLoading, error, clearError } = useAuthStore();
 
   const [email, setEmail] = useState('');
@@ -53,6 +51,7 @@ export default function SignInScreen() {
     }
   };
 
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
@@ -65,22 +64,16 @@ export default function SignInScreen() {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
         >
-          <Animated.View
-            entering={FadeInDown.duration(600)}
-            style={styles.header}
-          >
+          <View style={styles.header}>
             <Text style={[styles.title, { color: colors.text }]}>
               Welcome Back
             </Text>
             <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
               Sign in to access your portfolio
             </Text>
-          </Animated.View>
+          </View>
 
-          <Animated.View
-            entering={FadeInDown.delay(200).duration(600)}
-            style={styles.form}
-          >
+          <View style={styles.form}>
             <Input
               label="Email"
               placeholder="Enter your email"
@@ -118,27 +111,9 @@ export default function SignInScreen() {
               style={{ marginTop: Spacing.md }}
             />
 
-            <View style={styles.divider}>
-              <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
-              <Text style={[styles.dividerText, { color: colors.textSecondary }]}>
-                or
-              </Text>
-              <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
-            </View>
+          </View>
 
-            <Button
-              title="Continue with Apple"
-              variant="outline"
-              fullWidth
-              size="lg"
-              onPress={() => Alert.alert('Coming Soon', 'Apple Sign In requires a development build')}
-            />
-          </Animated.View>
-
-          <Animated.View
-            entering={FadeInDown.delay(400).duration(600)}
-            style={styles.footer}
-          >
+          <View style={styles.footer}>
             <Text style={[styles.footerText, { color: colors.textSecondary }]}>
               Don't have an account?{' '}
             </Text>
@@ -147,7 +122,7 @@ export default function SignInScreen() {
                 Sign Up
               </Text>
             </Link>
-          </Animated.View>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -186,19 +161,6 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     marginTop: -Spacing.sm,
     marginBottom: Spacing.md,
-  },
-  divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: Spacing.lg,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-  },
-  dividerText: {
-    marginHorizontal: Spacing.md,
-    fontSize: FontSize.sm,
   },
   footer: {
     flexDirection: 'row',

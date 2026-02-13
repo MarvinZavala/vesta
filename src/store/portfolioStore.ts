@@ -268,7 +268,8 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
         allocationBySector[holding.sector] = (allocationBySector[holding.sector] ?? 0) + currentValue;
       }
 
-      allocationByCountry[holding.country] = (allocationByCountry[holding.country] ?? 0) + currentValue;
+      const countryKey = holding.country || 'Global';
+      allocationByCountry[countryKey] = (allocationByCountry[countryKey] ?? 0) + currentValue;
 
       return {
         ...holding,

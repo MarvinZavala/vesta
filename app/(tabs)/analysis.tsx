@@ -1,30 +1,35 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeInDown } from 'react-native-reanimated';
-import { Card, Button } from '@/components/ui';
+import * as Haptics from 'expo-haptics';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withDelay,
+} from 'react-native-reanimated';
+import { Button } from '@/components/ui';
+import { AllocationPieChart } from '@/components/charts';
 import { useTheme } from '@/hooks/useTheme';
 import { usePortfolioStore } from '@/store/portfolioStore';
 import { useAuthStore } from '@/store/authStore';
 import {
-  ASSET_TYPE_LABELS,
   ASSET_TYPE_COLORS,
   SECTOR_COLORS,
 } from '@/utils/formatters';
-import { FontSize, FontWeight, Spacing, BorderRadius } from '@/constants/theme';
-
-const { width } = Dimensions.get('window');
+import { FontSize, FontWeight, Spacing, BorderRadius, Shadow } from '@/constants/theme';
 
 export default function AnalysisScreen() {
-  const { colors } = useTheme();
+  const { width } = useWindowDimensions();
+  const { colors, isDark } = useTheme();
   const router = useRouter();
   const { profile } = useAuthStore();
   const { summary, holdingsWithPrices } = usePortfolioStore();
@@ -32,63 +37,74 @@ export default function AnalysisScreen() {
   const isPremium = profile?.subscription_tier !== 'free';
   const isPremiumPlus = profile?.subscription_tier === 'premium_plus';
 
-  // Calculate diversification metrics
   const assetTypeData = summary?.allocation_by_type
-    ? Object.entries(summary.allocation_by_type)
-        .filter(([_, value]) => value > 0)
-        .sort((a, b) => b[1] - a[1])
+    ? Object.entries(summary.allocation_by_type).filter(([_, v]) => v > 0).sort((a, b) => b[1] - a[1])
     : [];
 
   const sectorData = summary?.allocation_by_sector
-    ? Object.entries(summary.allocation_by_sector)
-        .filter(([_, value]) => value > 0)
-        .sort((a, b) => b[1] - a[1])
+    ? Object.entries(summary.allocation_by_sector).filter(([_, v]) => v > 0).sort((a, b) => b[1] - a[1])
     : [];
 
   const countryData = summary?.allocation_by_country
-    ? Object.entries(summary.allocation_by_country)
-        .filter(([_, value]) => value > 0)
-        .sort((a, b) => b[1] - a[1])
+    ? Object.entries(summary.allocation_by_country).filter(([_, v]) => v > 0).sort((a, b) => b[1] - a[1])
     : [];
 
-  // Simple risk score based on concentration
   const calculateRiskScore = () => {
     if (assetTypeData.length === 0) return 0;
-
-    // Higher concentration = higher risk
     const topAssetPercent = assetTypeData[0]?.[1] || 0;
     const diversificationScore = Math.min(100, assetTypeData.length * 15);
     const concentrationPenalty = Math.max(0, topAssetPercent - 40);
-
     return Math.round(Math.max(0, Math.min(100, 50 + concentrationPenalty - diversificationScore / 2)));
   };
 
   const riskScore = calculateRiskScore();
 
-  const getRiskLabel = (score: number) => {
-    if (score < 30) return { label: 'Low Risk', color: colors.gain };
-    if (score < 60) return { label: 'Moderate Risk', color: colors.warning };
-    return { label: 'High Risk', color: colors.loss };
+  const getRiskInfo = (score: number) => {
+    if (score < 30) return { label: 'Low Risk', color: colors.gain, bg: isDark ? 'rgba(52,211,153,0.12)' : 'rgba(5,150,105,0.06)' };
+    if (score < 60) return { label: 'Moderate', color: colors.warning, bg: isDark ? 'rgba(251,191,36,0.12)' : 'rgba(217,119,6,0.06)' };
+    return { label: 'High Risk', color: colors.loss, bg: isDark ? 'rgba(248,113,113,0.12)' : 'rgba(220,38,38,0.06)' };
   };
 
-  const riskInfo = getRiskLabel(riskScore);
+  const riskInfo = getRiskInfo(riskScore);
 
+  // Animated bar
+  function AnimatedBar({ percent, color, delay: d }: { percent: number; color: string; delay: number }) {
+    const barWidth = useSharedValue(0);
+    useEffect(() => {
+      barWidth.value = withDelay(d, withTiming(percent, { duration: 600 }));
+    }, [percent]);
+    const style = useAnimatedStyle(() => ({
+      width: `${barWidth.value}%` as any,
+      backgroundColor: color,
+    }));
+    return (
+      <View style={[styles.barBg, { backgroundColor: isDark ? colors.backgroundTertiary : colors.backgroundSecondary }]}>
+        <Animated.View style={[styles.barFill, style]} />
+      </View>
+    );
+  }
+
+  // Empty state
   if (holdingsWithPrices.length === 0) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={styles.emptyContainer}>
-          <Ionicons name="analytics-outline" size={64} color={colors.textTertiary} />
+          <View style={[styles.emptyIconBox, { backgroundColor: isDark ? 'rgba(16,185,129,0.1)' : 'rgba(5,150,105,0.06)' }]}>
+            <Ionicons name="bar-chart" size={40} color={colors.primary} />
+          </View>
           <Text style={[styles.emptyTitle, { color: colors.text }]}>
             No Data to Analyze
           </Text>
           <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
-            Add some assets to see your portfolio analysis
+            Add assets to see portfolio insights{'\n'}and diversification analysis
           </Text>
-          <Button
-            title="Add Assets"
+          <TouchableOpacity
+            style={[styles.emptyCTA, { backgroundColor: colors.primary }]}
             onPress={() => router.push('/(tabs)/portfolio')}
-            style={{ marginTop: Spacing.lg }}
-          />
+            activeOpacity={0.85}
+          >
+            <Text style={styles.emptyCTAText}>Add Assets</Text>
+          </TouchableOpacity>
         </View>
       </View>
     );
@@ -98,434 +114,433 @@ export default function AnalysisScreen() {
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
     >
       {/* Risk Score */}
-      <Animated.View entering={FadeInDown.duration(600)}>
-        <Card style={styles.riskCard} padding="lg">
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>
-            Portfolio Risk Score
-          </Text>
-
-          <View style={styles.riskMeter}>
-            <View
-              style={[
-                styles.riskMeterBg,
-                { backgroundColor: colors.backgroundTertiary },
-              ]}
-            >
-              <View
-                style={[
-                  styles.riskMeterFill,
-                  {
-                    width: `${riskScore}%`,
-                    backgroundColor: riskInfo.color,
-                  },
-                ]}
-              />
+      <View style={styles.section}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Risk Score</Text>
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+          <View style={styles.riskTop}>
+            <View style={[styles.riskBadge, { backgroundColor: riskInfo.bg }]}>
+              <Text style={[styles.riskScoreNum, { color: riskInfo.color }]}>{riskScore}</Text>
             </View>
-            <View style={styles.riskLabels}>
-              <Text style={[styles.riskLabelText, { color: colors.textSecondary }]}>
-                Low
-              </Text>
-              <Text style={[styles.riskLabelText, { color: colors.textSecondary }]}>
-                High
+            <View style={styles.riskInfo}>
+              <Text style={[styles.riskLabel, { color: riskInfo.color }]}>{riskInfo.label}</Text>
+              <Text style={[styles.riskHint, { color: colors.textTertiary }]}>
+                Based on concentration & diversity
               </Text>
             </View>
           </View>
 
-          <View style={styles.riskResult}>
-            <Text style={[styles.riskScore, { color: colors.text }]}>
-              {riskScore}
-            </Text>
-            <Text style={[styles.riskLabel, { color: riskInfo.color }]}>
-              {riskInfo.label}
-            </Text>
+          {/* Meter */}
+          <View style={styles.meterContainer}>
+            <View style={[styles.meterBg, { backgroundColor: isDark ? colors.backgroundTertiary : colors.backgroundSecondary }]}>
+              <View style={[styles.meterFill, { width: `${riskScore}%`, backgroundColor: riskInfo.color }]} />
+            </View>
+            <View style={styles.meterLabels}>
+              <Text style={[styles.meterLabelText, { color: colors.textTertiary }]}>Low</Text>
+              <Text style={[styles.meterLabelText, { color: colors.textTertiary }]}>High</Text>
+            </View>
           </View>
 
+          {/* AI upsell */}
           {!isPremiumPlus && (
             <TouchableOpacity
-              style={[styles.upgradePrompt, { backgroundColor: colors.primaryLight + '20' }]}
-              onPress={() => router.push('/paywall')}
+              style={[styles.upsellRow, { backgroundColor: isDark ? 'rgba(16,185,129,0.08)' : 'rgba(5,150,105,0.04)' }]}
+              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push('/paywall'); }}
+              activeOpacity={0.7}
             >
-              <Ionicons name="sparkles" size={20} color={colors.primary} />
-              <Text style={[styles.upgradeText, { color: colors.primary }]}>
-                Get AI-powered risk analysis
-              </Text>
-              <Ionicons name="chevron-forward" size={16} color={colors.primary} />
+              <Ionicons name="sparkles" size={16} color={colors.primary} />
+              <Text style={[styles.upsellText, { color: colors.primary }]}>Get AI-powered risk analysis</Text>
+              <Ionicons name="chevron-forward" size={14} color={colors.primary} />
             </TouchableOpacity>
           )}
-        </Card>
-      </Animated.View>
+        </View>
+      </View>
 
       {/* Asset Allocation */}
-      <Animated.View entering={FadeInDown.delay(100).duration(600)}>
-        <Card style={styles.sectionCard}>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>
-            Asset Allocation
-          </Text>
+      <View style={styles.section}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Asset Allocation</Text>
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+          {summary && (
+            <AllocationPieChart
+              data={summary.allocation_by_type}
+              size={width * 0.5}
+              showLegend={true}
+              centerLabel="Assets"
+              centerValue={String(holdingsWithPrices.length)}
+            />
+          )}
+        </View>
+      </View>
 
-          {/* Donut Chart Placeholder - Visual bars */}
-          <View style={styles.allocationBars}>
-            {assetTypeData.map(([type, percent], index) => (
-              <View key={type} style={styles.allocationItem}>
-                <View style={styles.allocationHeader}>
-                  <View
-                    style={[
-                      styles.allocationDot,
-                      { backgroundColor: ASSET_TYPE_COLORS[type] || colors.primary },
-                    ]}
-                  />
-                  <Text style={[styles.allocationLabel, { color: colors.text }]}>
-                    {ASSET_TYPE_LABELS[type] || type}
-                  </Text>
-                  <Text style={[styles.allocationPercent, { color: colors.textSecondary }]}>
-                    {percent.toFixed(1)}%
-                  </Text>
-                </View>
-                <View
-                  style={[styles.allocationBarBg, { backgroundColor: colors.backgroundTertiary }]}
-                >
-                  <View
-                    style={[
-                      styles.allocationBarFill,
-                      {
-                        width: `${percent}%`,
-                        backgroundColor: ASSET_TYPE_COLORS[type] || colors.primary,
-                      },
-                    ]}
-                  />
-                </View>
-              </View>
-            ))}
-          </View>
-        </Card>
-      </Animated.View>
-
-      {/* Sector Breakdown - Premium */}
-      <Animated.View entering={FadeInDown.delay(200).duration(600)}>
-        <Card style={styles.sectionCard}>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              Sector Breakdown
-            </Text>
-            {!isPremium && (
-              <View style={[styles.premiumBadge, { backgroundColor: colors.primary }]}>
-                <Text style={styles.premiumBadgeText}>PRO</Text>
-              </View>
-            )}
-          </View>
-
+      {/* Sector Breakdown */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Sectors</Text>
+          {!isPremium && (
+            <View style={[styles.proBadge, { backgroundColor: colors.primary }]}>
+              <Text style={styles.proBadgeText}>PRO</Text>
+            </View>
+          )}
+        </View>
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
           {isPremium ? (
             sectorData.length > 0 ? (
-              <View style={styles.allocationBars}>
-                {sectorData.slice(0, 6).map(([sector, percent]) => (
-                  <View key={sector} style={styles.allocationItem}>
-                    <View style={styles.allocationHeader}>
-                      <View
-                        style={[
-                          styles.allocationDot,
-                          { backgroundColor: SECTOR_COLORS[sector] || colors.primary },
-                        ]}
-                      />
-                      <Text style={[styles.allocationLabel, { color: colors.text }]}>
-                        {sector}
-                      </Text>
-                      <Text style={[styles.allocationPercent, { color: colors.textSecondary }]}>
-                        {percent.toFixed(1)}%
-                      </Text>
+              <View style={styles.barList}>
+                {sectorData.slice(0, 6).map(([sector, pct], i) => (
+                  <View key={sector} style={styles.barItem}>
+                    <View style={styles.barHeader}>
+                      <View style={[styles.barDot, { backgroundColor: SECTOR_COLORS[sector] || colors.primary }]} />
+                      <Text style={[styles.barLabel, { color: colors.text }]}>{sector}</Text>
+                      <Text style={[styles.barPct, { color: colors.textSecondary }]}>{pct.toFixed(1)}%</Text>
                     </View>
-                    <View
-                      style={[styles.allocationBarBg, { backgroundColor: colors.backgroundTertiary }]}
-                    >
-                      <View
-                        style={[
-                          styles.allocationBarFill,
-                          {
-                            width: `${percent}%`,
-                            backgroundColor: SECTOR_COLORS[sector] || colors.primary,
-                          },
-                        ]}
-                      />
-                    </View>
+                    <AnimatedBar percent={pct} color={SECTOR_COLORS[sector] || colors.primary} delay={i * 80} />
                   </View>
                 ))}
               </View>
             ) : (
-              <Text style={[styles.noDataText, { color: colors.textSecondary }]}>
+              <Text style={[styles.noDataText, { color: colors.textTertiary }]}>
                 Add sector info to your assets to see breakdown
               </Text>
             )
           ) : (
-            <View style={styles.lockedContent}>
-              <Ionicons name="lock-closed" size={32} color={colors.textTertiary} />
-              <Text style={[styles.lockedText, { color: colors.textSecondary }]}>
-                Upgrade to Premium to see sector analysis
-              </Text>
-              <Button
-                title="Upgrade"
-                size="sm"
-                onPress={() => router.push('/paywall')}
-                style={{ marginTop: Spacing.sm }}
-              />
+            <LockedContent
+              text="Upgrade to see sector analysis"
+              onPress={() => router.push('/paywall')}
+              colors={colors}
+              isDark={isDark}
+            />
+          )}
+        </View>
+      </View>
+
+      {/* Geographic */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Geography</Text>
+          {!isPremium && (
+            <View style={[styles.proBadge, { backgroundColor: colors.primary }]}>
+              <Text style={styles.proBadgeText}>PRO</Text>
             </View>
           )}
-        </Card>
-      </Animated.View>
-
-      {/* Country Exposure - Premium */}
-      <Animated.View entering={FadeInDown.delay(300).duration(600)}>
-        <Card style={styles.sectionCard}>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              Geographic Exposure
-            </Text>
-            {!isPremium && (
-              <View style={[styles.premiumBadge, { backgroundColor: colors.primary }]}>
-                <Text style={styles.premiumBadgeText}>PRO</Text>
-              </View>
-            )}
-          </View>
-
+        </View>
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
           {isPremium ? (
-            <View style={styles.allocationBars}>
-              {countryData.slice(0, 5).map(([country, percent]) => (
-                <View key={country} style={styles.allocationItem}>
-                  <View style={styles.allocationHeader}>
-                    <Text style={styles.countryFlag}>
-                      {country === 'US' ? '🇺🇸' : country === 'UK' ? '🇬🇧' : '🌍'}
-                    </Text>
-                    <Text style={[styles.allocationLabel, { color: colors.text }]}>
-                      {country}
-                    </Text>
-                    <Text style={[styles.allocationPercent, { color: colors.textSecondary }]}>
-                      {percent.toFixed(1)}%
-                    </Text>
+            countryData.length > 0 ? (
+              <View style={styles.barList}>
+                {countryData.slice(0, 5).map(([country, pct], i) => (
+                  <View key={country} style={styles.barItem}>
+                    <View style={styles.barHeader}>
+                      <Text style={styles.flag}>
+                        {country === 'US' ? '🇺🇸' : country === 'UK' ? '🇬🇧' : country === 'JP' ? '🇯🇵' : country === 'CN' ? '🇨🇳' : country === 'DE' ? '🇩🇪' : country === 'Global' ? '🌐' : '🌍'}
+                      </Text>
+                      <Text style={[styles.barLabel, { color: colors.text }]}>{country}</Text>
+                      <Text style={[styles.barPct, { color: colors.textSecondary }]}>{pct.toFixed(1)}%</Text>
+                    </View>
+                    <AnimatedBar percent={pct} color={colors.primary} delay={i * 80} />
                   </View>
-                  <View
-                    style={[styles.allocationBarBg, { backgroundColor: colors.backgroundTertiary }]}
-                  >
-                    <View
-                      style={[
-                        styles.allocationBarFill,
-                        {
-                          width: `${percent}%`,
-                          backgroundColor: colors.primary,
-                        },
-                      ]}
-                    />
-                  </View>
-                </View>
-              ))}
-            </View>
+                ))}
+              </View>
+            ) : (
+              <Text style={[styles.noDataText, { color: colors.textTertiary }]}>
+                Add country info to see geographic exposure
+              </Text>
+            )
           ) : (
-            <View style={styles.lockedContent}>
-              <Ionicons name="lock-closed" size={32} color={colors.textTertiary} />
-              <Text style={[styles.lockedText, { color: colors.textSecondary }]}>
-                Upgrade to Premium to see geographic analysis
-              </Text>
-            </View>
+            <LockedContent
+              text="Upgrade to see geographic analysis"
+              onPress={() => router.push('/paywall')}
+              colors={colors}
+              isDark={isDark}
+            />
           )}
-        </Card>
-      </Animated.View>
+        </View>
+      </View>
 
-      {/* AI Advisor CTA */}
-      <Animated.View entering={FadeInDown.delay(400).duration(600)}>
-        <Card
-          style={[styles.aiCard, { backgroundColor: colors.primary }]}
-          padding="lg"
-          onPress={() => {
-            if (isPremiumPlus) {
-              router.push('/ai-chat');
-            } else {
-              router.push('/paywall');
-            }
-          }}
-        >
-          <View style={styles.aiContent}>
-            <Ionicons name="sparkles" size={32} color="#FFFFFF" />
-            <View style={styles.aiText}>
-              <Text style={styles.aiTitle}>AI Portfolio Advisor</Text>
-              <Text style={styles.aiSubtitle}>
-                {isPremiumPlus
-                  ? 'Get personalized insights and recommendations'
-                  : 'Upgrade to Premium+ for AI-powered analysis'}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={24} color="#FFFFFF" />
-          </View>
-        </Card>
-      </Animated.View>
+      {/* AI CTA */}
+      <TouchableOpacity
+        style={[styles.aiCard, { backgroundColor: colors.primary }]}
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          router.push(isPremiumPlus ? '/ai-chat' : '/paywall');
+        }}
+        activeOpacity={0.85}
+      >
+        <Ionicons name="sparkles" size={28} color="#FFF" />
+        <View style={styles.aiText}>
+          <Text style={styles.aiTitle}>AI Portfolio Advisor</Text>
+          <Text style={styles.aiSubtitle}>
+            {isPremiumPlus
+              ? 'Get personalized insights'
+              : 'Upgrade for AI-powered analysis'}
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={22} color="rgba(255,255,255,0.6)" />
+      </TouchableOpacity>
     </ScrollView>
   );
 }
 
+function LockedContent({
+  text,
+  onPress,
+  colors,
+  isDark,
+}: {
+  text: string;
+  onPress: () => void;
+  colors: any;
+  isDark: boolean;
+}) {
+  return (
+    <View style={styles.lockedContent}>
+      <View style={[styles.lockedIconBox, { backgroundColor: isDark ? 'rgba(100,116,139,0.12)' : 'rgba(148,163,184,0.1)' }]}>
+        <Ionicons name="lock-closed" size={22} color={colors.textTertiary} />
+      </View>
+      <Text style={[styles.lockedText, { color: colors.textSecondary }]}>{text}</Text>
+      <TouchableOpacity
+        style={[styles.lockedBtn, { backgroundColor: colors.primary }]}
+        onPress={onPress}
+        activeOpacity={0.85}
+      >
+        <Text style={styles.lockedBtnText}>Upgrade</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   content: {
-    padding: Spacing.md,
-    paddingBottom: Spacing.xxl,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.xxl + 20,
   },
-  emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: Spacing.xl,
-  },
-  emptyTitle: {
-    fontSize: FontSize.xl,
-    fontWeight: FontWeight.bold,
-    marginTop: Spacing.md,
-  },
-  emptySubtitle: {
-    fontSize: FontSize.md,
-    textAlign: 'center',
-    marginTop: Spacing.sm,
-  },
-  riskCard: {
-    marginBottom: Spacing.md,
-  },
-  sectionCard: {
-    marginBottom: Spacing.md,
-  },
-  sectionHeader: {
+
+  // Sections
+  section: { marginBottom: Spacing.lg },
+  sectionHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: Spacing.md,
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
   },
   sectionTitle: {
     fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
+    fontWeight: FontWeight.bold,
+    letterSpacing: -0.3,
+    marginBottom: Spacing.sm,
+  },
+  card: {
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.md,
+    ...Shadow.sm,
+  },
+
+  // Risk
+  riskTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
     marginBottom: Spacing.md,
   },
-  premiumBadge: {
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.sm,
+  riskBadge: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  premiumBadgeText: {
-    color: '#FFFFFF',
-    fontSize: FontSize.xs,
+  riskScoreNum: {
+    fontSize: FontSize.xxl,
     fontWeight: FontWeight.bold,
+    fontVariant: ['tabular-nums'],
   },
-  riskMeter: {
-    marginBottom: Spacing.md,
-  },
-  riskMeterBg: {
-    height: 12,
-    borderRadius: 6,
-    overflow: 'hidden',
-  },
-  riskMeterFill: {
-    height: '100%',
-    borderRadius: 6,
-  },
-  riskLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: Spacing.xs,
-  },
-  riskLabelText: {
-    fontSize: FontSize.xs,
-  },
-  riskResult: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: Spacing.sm,
-  },
-  riskScore: {
-    fontSize: FontSize.display,
-    fontWeight: FontWeight.bold,
-  },
+  riskInfo: { flex: 1 },
   riskLabel: {
     fontSize: FontSize.md,
-    fontWeight: FontWeight.medium,
+    fontWeight: FontWeight.bold,
   },
-  upgradePrompt: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.md,
-    borderRadius: BorderRadius.md,
-    marginTop: Spacing.md,
-    gap: Spacing.sm,
+  riskHint: {
+    fontSize: FontSize.xs,
+    marginTop: 2,
   },
-  upgradeText: {
-    flex: 1,
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-  },
-  allocationBars: {
-    gap: Spacing.md,
-  },
-  allocationItem: {
-    gap: Spacing.xs,
-  },
-  allocationHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  allocationDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginRight: Spacing.sm,
-  },
-  allocationLabel: {
-    flex: 1,
-    fontSize: FontSize.sm,
-  },
-  allocationPercent: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-  },
-  allocationBarBg: {
+  meterContainer: { marginBottom: Spacing.sm },
+  meterBg: {
     height: 8,
     borderRadius: 4,
     overflow: 'hidden',
   },
-  allocationBarFill: {
+  meterFill: {
     height: '100%',
     borderRadius: 4,
   },
-  countryFlag: {
-    fontSize: 16,
+  meterLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  meterLabelText: { fontSize: 10 },
+
+  upsellRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    marginTop: Spacing.sm,
+    gap: 6,
+  },
+  upsellText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+  },
+
+  // Bars
+  barList: { gap: Spacing.md },
+  barItem: { gap: 6 },
+  barHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  barDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     marginRight: Spacing.sm,
   },
-  lockedContent: {
-    alignItems: 'center',
-    paddingVertical: Spacing.lg,
+  flag: {
+    fontSize: 14,
+    marginRight: Spacing.sm,
   },
-  lockedText: {
+  barLabel: {
+    flex: 1,
     fontSize: FontSize.sm,
-    textAlign: 'center',
-    marginTop: Spacing.sm,
+    fontWeight: FontWeight.medium,
+  },
+  barPct: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    fontVariant: ['tabular-nums'],
+  },
+  barBg: {
+    height: 6,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  barFill: {
+    height: '100%',
+    borderRadius: 3,
   },
   noDataText: {
     fontSize: FontSize.sm,
     textAlign: 'center',
     paddingVertical: Spacing.lg,
   },
-  aiCard: {
-    marginTop: Spacing.sm,
+
+  // PRO badge
+  proBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.xs,
+    marginBottom: Spacing.sm,
   },
-  aiContent: {
+  proBadgeText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.5,
+  },
+
+  // Locked
+  lockedContent: {
+    alignItems: 'center',
+    paddingVertical: Spacing.lg,
+  },
+  lockedIconBox: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.sm,
+  },
+  lockedText: {
+    fontSize: FontSize.sm,
+    textAlign: 'center',
+    marginBottom: Spacing.md,
+  },
+  lockedBtn: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 8,
+    borderRadius: BorderRadius.full,
+  },
+  lockedBtnText: {
+    color: '#FFF',
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+  },
+
+  // AI CTA
+  aiCard: {
     flexDirection: 'row',
     alignItems: 'center',
+    padding: Spacing.lg,
+    borderRadius: BorderRadius.xl,
     gap: Spacing.md,
+    marginBottom: Spacing.md,
+    ...Shadow.md,
   },
-  aiText: {
-    flex: 1,
-  },
+  aiText: { flex: 1 },
   aiTitle: {
-    fontSize: FontSize.lg,
+    fontSize: FontSize.md,
     fontWeight: FontWeight.bold,
-    color: '#FFFFFF',
+    color: '#FFF',
   },
   aiSubtitle: {
     fontSize: FontSize.sm,
-    color: 'rgba(255,255,255,0.8)',
+    color: 'rgba(255,255,255,0.7)',
     marginTop: 2,
+  },
+
+  // Empty
+  emptyContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.xxl * 2,
+  },
+  emptyIconBox: {
+    width: 80,
+    height: 80,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.lg,
+  },
+  emptyTitle: {
+    fontSize: FontSize.xxl,
+    fontWeight: FontWeight.bold,
+    letterSpacing: -0.5,
+    marginBottom: Spacing.xs,
+  },
+  emptySubtitle: {
+    fontSize: FontSize.md,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: Spacing.xl,
+  },
+  emptyCTA: {
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: 14,
+    borderRadius: BorderRadius.full,
+    ...Shadow.md,
+  },
+  emptyCTAText: {
+    color: '#FFF',
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.bold,
   },
 });

@@ -4,21 +4,24 @@ import {
   Text,
   StyleSheet,
   ActivityIndicator,
+  View,
   ViewStyle,
   TextStyle,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/hooks/useTheme';
 import { BorderRadius, FontSize, FontWeight, Spacing } from '@/constants/theme';
 
 interface ButtonProps {
   title: string;
-  onPress: () => void;
+  onPress?: () => void;
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost';
   size?: 'sm' | 'md' | 'lg';
   disabled?: boolean;
   loading?: boolean;
   fullWidth?: boolean;
+  icon?: keyof typeof Ionicons.glyphMap;
   style?: ViewStyle;
   textStyle?: TextStyle;
 }
@@ -31,13 +34,14 @@ export function Button({
   disabled = false,
   loading = false,
   fullWidth = false,
+  icon,
   style,
   textStyle,
 }: ButtonProps) {
   const { colors } = useTheme();
 
   const handlePress = () => {
-    if (!disabled && !loading) {
+    if (!disabled && !loading && onPress) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       onPress();
     }
@@ -124,18 +128,28 @@ export function Button({
       {loading ? (
         <ActivityIndicator color={getTextColor()} size="small" />
       ) : (
-        <Text
-          style={[
-            styles.text,
-            {
-              color: getTextColor(),
-              fontSize: getFontSize(),
-            },
-            textStyle,
-          ]}
-        >
-          {title}
-        </Text>
+        <View style={styles.content}>
+          {icon && (
+            <Ionicons
+              name={icon}
+              size={getFontSize() + 2}
+              color={getTextColor()}
+              style={{ marginRight: Spacing.sm }}
+            />
+          )}
+          <Text
+            style={[
+              styles.text,
+              {
+                color: getTextColor(),
+                fontSize: getFontSize(),
+              },
+              textStyle,
+            ]}
+          >
+            {title}
+          </Text>
+        </View>
       )}
     </TouchableOpacity>
   );
@@ -151,6 +165,11 @@ const styles = StyleSheet.create({
   },
   fullWidth: {
     width: '100%',
+  },
+  content: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   text: {
     fontWeight: FontWeight.semibold,

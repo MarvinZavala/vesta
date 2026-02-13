@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,13 +6,17 @@ import {
   ScrollView,
   RefreshControl,
   TouchableOpacity,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { FadeInDown } from 'react-native-reanimated';
-import { Card, AnimatedCounter, PercentCounter } from '@/components/ui';
+import * as Haptics from 'expo-haptics';
+import { AnimatedCounter, PercentCounter } from '@/components/ui';
+import { AllocationPieChart } from '@/components/charts';
 import { useTheme } from '@/hooks/useTheme';
+import { usePrices } from '@/hooks/usePrices';
 import { usePortfolioStore } from '@/store/portfolioStore';
 import { useAuthStore } from '@/store/authStore';
 import {
@@ -20,17 +24,24 @@ import {
   formatPercent,
   ASSET_TYPE_LABELS,
   ASSET_TYPE_COLORS,
+  ASSET_TYPE_ICONS,
 } from '@/utils/formatters';
-import { FontSize, FontWeight, Spacing, BorderRadius } from '@/constants/theme';
+import { FontSize, FontWeight, Spacing, BorderRadius, Shadow } from '@/constants/theme';
 
-const { width } = Dimensions.get('window');
+function getGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
 
 export default function DashboardScreen() {
-  const { colors } = useTheme();
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
   const router = useRouter();
   const { profile } = useAuthStore();
   const {
-    activePortfolio,
     holdingsWithPrices,
     summary,
     isLoading,
@@ -45,537 +56,550 @@ export default function DashboardScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchPortfolios();
+    await Promise.all([fetchPortfolios(), refreshPrices()]);
     setRefreshing(false);
   };
 
-  const isPremium = profile?.subscription_tier !== 'free';
+  const isPremiumPlus = profile?.subscription_tier === 'premium_plus';
 
-  // Get top holdings (max 5)
-  const topHoldings = [...holdingsWithPrices]
-    .sort((a, b) => b.current_value - a.current_value)
-    .slice(0, 5);
+  const { refreshPrices } = usePrices({
+    subscriptionTier: profile?.subscription_tier || 'free',
+    autoRefresh: true,
+  });
 
-  // Get allocation data for pie chart visualization
-  const allocationData = summary?.allocation_by_type
-    ? Object.entries(summary.allocation_by_type)
-        .filter(([_, value]) => value > 0)
-        .sort((a, b) => b[1] - a[1])
-    : [];
+  const topHoldings = useMemo(
+    () => [...holdingsWithPrices].sort((a, b) => b.current_value - a.current_value).slice(0, 5),
+    [holdingsWithPrices],
+  );
+
+  const allocationData = useMemo(
+    () =>
+      summary?.allocation_by_type
+        ? Object.entries(summary.allocation_by_type).filter(([_, v]) => v > 0).sort((a, b) => b[1] - a[1])
+        : [],
+    [summary],
+  );
+
+  const totalValue = summary?.total_value ?? 0;
+  const dayChange = summary?.day_change ?? 0;
+  const dayChangePct = summary?.day_change_percent ?? 0;
+  const allTimeGL = summary?.total_gain_loss ?? 0;
+  const allTimeGLPct = summary?.total_gain_loss_percent ?? 0;
+  const isGainToday = dayChange >= 0;
+  const isGainAllTime = allTimeGL >= 0;
+  const hasHoldings = holdingsWithPrices.length > 0;
+
+  const firstName = profile?.display_name?.split(' ')[0] || '';
+
+  // Gradient colors for the hero area
+  const heroGradient = isDark
+    ? ['#0F172A', '#0F172A'] as const
+    : ['#FFFFFF', '#F0FDF4'] as const;
 
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
       }
     >
-      {/* Portfolio Value Card */}
-      <Animated.View entering={FadeInDown.duration(600)}>
-        <Card style={styles.valueCard} padding="lg">
-          <Text style={[styles.valueLabel, { color: colors.textSecondary }]}>
-            Total Portfolio Value
-          </Text>
+      {/* ──── Hero Section ──── */}
+      <LinearGradient colors={heroGradient} style={[styles.hero, { paddingTop: insets.top + Spacing.sm }]}>
+        {/* Greeting */}
+        <Text style={[styles.greeting, { color: colors.textSecondary }]}>
+          {getGreeting()}{firstName ? `, ${firstName}` : ''}
+        </Text>
 
-          <AnimatedCounter
-            value={summary?.total_value ?? 0}
-            style={[styles.valueAmount, { color: colors.text }]}
-          />
-
-          <View style={styles.changeRow}>
-            <View
-              style={[
-                styles.changeBadge,
-                {
-                  backgroundColor:
-                    (summary?.day_change ?? 0) >= 0
-                      ? colors.successLight
-                      : colors.errorLight,
-                },
-              ]}
-            >
-              <Ionicons
-                name={(summary?.day_change ?? 0) >= 0 ? 'trending-up' : 'trending-down'}
-                size={16}
-                color={(summary?.day_change ?? 0) >= 0 ? colors.gain : colors.loss}
-              />
-              <Text
-                style={[
-                  styles.changeText,
-                  {
-                    color:
-                      (summary?.day_change ?? 0) >= 0 ? colors.gain : colors.loss,
-                  },
-                ]}
-              >
-                {formatCurrency(Math.abs(summary?.day_change ?? 0))} (
-                {formatPercent(summary?.day_change_percent ?? 0)})
-              </Text>
-            </View>
-            <Text style={[styles.changeLabel, { color: colors.textSecondary }]}>
-              Today
-            </Text>
-          </View>
-
-          {/* All-time gain/loss */}
-          <View style={[styles.allTimeRow, { borderTopColor: colors.border }]}>
-            <Text style={[styles.allTimeLabel, { color: colors.textSecondary }]}>
-              All-time
-            </Text>
-            <Text
-              style={[
-                styles.allTimeValue,
-                {
-                  color:
-                    (summary?.total_gain_loss ?? 0) >= 0 ? colors.gain : colors.loss,
-                },
-              ]}
-            >
-              {formatCurrency(summary?.total_gain_loss ?? 0)} (
-              {formatPercent(summary?.total_gain_loss_percent ?? 0)})
-            </Text>
-          </View>
-        </Card>
-      </Animated.View>
-
-      {/* Quick Actions */}
-      <Animated.View
-        entering={FadeInDown.delay(100).duration(600)}
-        style={styles.quickActions}
-      >
-        <QuickActionButton
-          icon="add-circle-outline"
-          label="Add Asset"
-          onPress={() => router.push('/(tabs)/portfolio')}
-          colors={colors}
+        {/* Portfolio Value */}
+        <AnimatedCounter
+          value={totalValue}
+          style={[styles.heroValue, { color: colors.text }]}
+          duration={800}
         />
-        <QuickActionButton
-          icon="sparkles-outline"
-          label="AI Insights"
+
+        {/* Day change pill */}
+        <View style={styles.changePillRow}>
+          <View
+            style={[
+              styles.changePill,
+              {
+                backgroundColor: isGainToday
+                  ? (isDark ? 'rgba(52,211,153,0.15)' : 'rgba(5,150,105,0.08)')
+                  : (isDark ? 'rgba(248,113,113,0.15)' : 'rgba(220,38,38,0.08)'),
+              },
+            ]}
+          >
+            <Ionicons
+              name={isGainToday ? 'caret-up' : 'caret-down'}
+              size={12}
+              color={isGainToday ? colors.gain : colors.loss}
+            />
+            <Text style={[styles.changePillText, { color: isGainToday ? colors.gain : colors.loss }]}>
+              {formatCurrency(Math.abs(dayChange))} ({formatPercent(dayChangePct)})
+            </Text>
+          </View>
+          <Text style={[styles.changePillLabel, { color: colors.textTertiary }]}>Today</Text>
+        </View>
+
+        {/* All-time row */}
+        {hasHoldings && (
+          <View style={styles.allTimeRow}>
+            <Text style={[styles.allTimeLabel, { color: colors.textTertiary }]}>All-time</Text>
+            <View style={styles.allTimeValues}>
+              <AnimatedCounter
+                value={allTimeGL}
+                style={[styles.allTimeAmount, { color: isGainAllTime ? colors.gain : colors.loss }]}
+                duration={600}
+              />
+              <Text style={[styles.allTimePct, { color: isGainAllTime ? colors.gain : colors.loss }]}>
+                {' '}
+              </Text>
+              <PercentCounter
+                value={allTimeGLPct}
+                style={[styles.allTimePct, { color: isGainAllTime ? colors.gain : colors.loss }]}
+                duration={600}
+              />
+            </View>
+          </View>
+        )}
+      </LinearGradient>
+
+      {/* ──── Quick Actions ──── */}
+      <View style={styles.actionsRow}>
+        <ActionChip
+          icon="add-circle"
+          label="Add Asset"
           onPress={() => {
-            if (isPremium) {
-              router.push('/ai-chat');
-            } else {
-              router.push('/paywall');
-            }
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.push('/(tabs)/portfolio');
           }}
           colors={colors}
-          badge={!isPremium ? 'PRO' : undefined}
+          primary
         />
-        <QuickActionButton
-          icon="pie-chart-outline"
-          label="Analysis"
-          onPress={() => router.push('/(tabs)/analysis')}
+        <ActionChip
+          icon="sparkles"
+          label="AI Advisor"
+          badge={!isPremiumPlus ? 'PRO' : undefined}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.push(isPremiumPlus ? '/ai-chat' : '/paywall');
+          }}
           colors={colors}
         />
-      </Animated.View>
+        <ActionChip
+          icon="bar-chart"
+          label="Analysis"
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.push('/(tabs)/analysis');
+          }}
+          colors={colors}
+        />
+      </View>
 
-      {/* Asset Allocation */}
-      {allocationData.length > 0 && (
-        <Animated.View entering={FadeInDown.delay(200).duration(600)}>
-          <Card style={styles.sectionCard}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Asset Allocation
-              </Text>
-              <TouchableOpacity onPress={() => router.push('/(tabs)/analysis')}>
-                <Text style={[styles.seeAll, { color: colors.primary }]}>
-                  See Details
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Simple allocation bars */}
-            <View style={styles.allocationBars}>
-              {allocationData.map(([type, percent]) => (
-                <View key={type} style={styles.allocationItem}>
-                  <View style={styles.allocationLabelRow}>
-                    <View
-                      style={[
-                        styles.allocationDot,
-                        { backgroundColor: ASSET_TYPE_COLORS[type] || colors.primary },
-                      ]}
-                    />
-                    <Text style={[styles.allocationLabel, { color: colors.text }]}>
-                      {ASSET_TYPE_LABELS[type] || type}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.allocationPercent,
-                        { color: colors.textSecondary },
-                      ]}
-                    >
-                      {percent.toFixed(1)}%
-                    </Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.allocationBarBg,
-                      { backgroundColor: colors.backgroundTertiary },
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.allocationBarFill,
-                        {
-                          width: `${percent}%`,
-                          backgroundColor: ASSET_TYPE_COLORS[type] || colors.primary,
-                        },
-                      ]}
-                    />
-                  </View>
-                </View>
-              ))}
-            </View>
-          </Card>
-        </Animated.View>
+      {/* ──── Asset Allocation ──── */}
+      {allocationData.length > 0 && summary && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Allocation</Text>
+            <TouchableOpacity
+              onPress={() => router.push('/(tabs)/analysis')}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Text style={[styles.seeAll, { color: colors.primary }]}>Details</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={[styles.sectionCard, { backgroundColor: colors.card }]}>
+            <AllocationPieChart
+              data={summary.allocation_by_type}
+              size={width * 0.42}
+              showLegend={true}
+              centerLabel="Assets"
+              centerValue={String(holdingsWithPrices.length)}
+            />
+          </View>
+        </View>
       )}
 
-      {/* Top Holdings */}
+      {/* ──── Top Holdings ──── */}
       {topHoldings.length > 0 && (
-        <Animated.View entering={FadeInDown.delay(300).duration(600)}>
-          <Card style={styles.sectionCard}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Top Holdings
-              </Text>
-              <TouchableOpacity onPress={() => router.push('/(tabs)/portfolio')}>
-                <Text style={[styles.seeAll, { color: colors.primary }]}>
-                  See All
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {topHoldings.map((holding, index) => (
-              <View
-                key={holding.id}
-                style={[
-                  styles.holdingItem,
-                  index < topHoldings.length - 1 && {
-                    borderBottomWidth: 1,
-                    borderBottomColor: colors.border,
-                  },
-                ]}
-              >
-                <View style={styles.holdingLeft}>
-                  <View
-                    style={[
-                      styles.holdingIcon,
-                      {
-                        backgroundColor:
-                          (ASSET_TYPE_COLORS[holding.asset_type] || colors.primary) +
-                          '20',
-                      },
-                    ]}
-                  >
-                    <Text style={styles.holdingSymbol}>
-                      {(holding.symbol || holding.name).slice(0, 2).toUpperCase()}
-                    </Text>
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Top Holdings</Text>
+            <TouchableOpacity
+              onPress={() => router.push('/(tabs)/portfolio')}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Text style={[styles.seeAll, { color: colors.primary }]}>See All</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={[styles.holdingsCard, { backgroundColor: colors.card }]}>
+            {topHoldings.map((holding, index) => {
+              const isLast = index === topHoldings.length - 1;
+              const glPct = holding.gain_loss_percent;
+              const icon = ASSET_TYPE_ICONS[holding.asset_type] as keyof typeof Ionicons.glyphMap;
+              const typeColor = ASSET_TYPE_COLORS[holding.asset_type] || colors.primary;
+              return (
+                <TouchableOpacity
+                  key={holding.id}
+                  style={[
+                    styles.holdingRow,
+                    !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+                  ]}
+                  activeOpacity={0.6}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    router.push(`/asset/${holding.id}`);
+                  }}
+                >
+                  {/* Icon */}
+                  <View style={[styles.holdingIcon, { backgroundColor: typeColor + '12' }]}>
+                    <Ionicons name={icon || 'cube'} size={18} color={typeColor} />
                   </View>
-                  <View>
-                    <Text style={[styles.holdingName, { color: colors.text }]}>
+
+                  {/* Info */}
+                  <View style={styles.holdingInfo}>
+                    <Text style={[styles.holdingName, { color: colors.text }]} numberOfLines={1}>
                       {holding.symbol || holding.name}
                     </Text>
-                    <Text
-                      style={[
-                        styles.holdingType,
-                        { color: colors.textSecondary },
-                      ]}
-                    >
+                    <Text style={[styles.holdingType, { color: colors.textTertiary }]}>
                       {ASSET_TYPE_LABELS[holding.asset_type]}
                     </Text>
                   </View>
-                </View>
-                <View style={styles.holdingRight}>
-                  <Text style={[styles.holdingValue, { color: colors.text }]}>
-                    {formatCurrency(holding.current_value)}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.holdingChange,
-                      {
-                        color:
-                          holding.gain_loss_percent >= 0 ? colors.gain : colors.loss,
-                      },
-                    ]}
-                  >
-                    {formatPercent(holding.gain_loss_percent)}
-                  </Text>
-                </View>
-              </View>
-            ))}
-          </Card>
-        </Animated.View>
+
+                  {/* Values */}
+                  <View style={styles.holdingValues}>
+                    <Text style={[styles.holdingValue, { color: colors.text }]}>
+                      {formatCurrency(holding.current_value)}
+                    </Text>
+                    <View
+                      style={[
+                        styles.holdingChangePill,
+                        {
+                          backgroundColor: glPct >= 0
+                            ? (isDark ? 'rgba(52,211,153,0.12)' : 'rgba(5,150,105,0.06)')
+                            : (isDark ? 'rgba(248,113,113,0.12)' : 'rgba(220,38,38,0.06)'),
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.holdingChangeText,
+                          { color: glPct >= 0 ? colors.gain : colors.loss },
+                        ]}
+                      >
+                        {formatPercent(glPct)}
+                      </Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
       )}
 
-      {/* Empty State */}
-      {holdingsWithPrices.length === 0 && !isLoading && (
-        <Animated.View entering={FadeInDown.delay(200).duration(600)}>
-          <Card style={styles.emptyCard} padding="lg">
-            <Ionicons
-              name="briefcase-outline"
-              size={48}
-              color={colors.textTertiary}
-            />
-            <Text style={[styles.emptyTitle, { color: colors.text }]}>
-              No Assets Yet
-            </Text>
-            <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
-              Start tracking your wealth by adding your first asset
-            </Text>
-            <TouchableOpacity
-              style={[styles.emptyButton, { backgroundColor: colors.primary }]}
-              onPress={() => router.push('/(tabs)/portfolio')}
-            >
-              <Ionicons name="add" size={20} color="#FFFFFF" />
-              <Text style={styles.emptyButtonText}>Add Your First Asset</Text>
-            </TouchableOpacity>
-          </Card>
-        </Animated.View>
+      {/* ──── Empty State ──── */}
+      {!hasHoldings && !isLoading && (
+        <View style={styles.emptyContainer}>
+          <View style={[styles.emptyIconBox, { backgroundColor: isDark ? 'rgba(16,185,129,0.1)' : 'rgba(5,150,105,0.06)' }]}>
+            <Ionicons name="pie-chart" size={44} color={colors.primary} />
+          </View>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>
+            Build Your Portfolio
+          </Text>
+          <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
+            Track stocks, crypto, real estate, and more{'\n'}all in one place
+          </Text>
+          <TouchableOpacity
+            style={[styles.emptyCTA, { backgroundColor: colors.primary }]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              router.push('/(tabs)/portfolio');
+            }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="add" size={20} color="#FFF" />
+            <Text style={styles.emptyCTAText}>Add Your First Asset</Text>
+          </TouchableOpacity>
+        </View>
       )}
     </ScrollView>
   );
 }
 
-function QuickActionButton({
+// ── Action Chip ───────────────────────────────────────────────────────────
+function ActionChip({
   icon,
   label,
   onPress,
   colors,
   badge,
+  primary,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
   colors: ReturnType<typeof useTheme>['colors'];
   badge?: string;
+  primary?: boolean;
 }) {
   return (
-    <TouchableOpacity style={styles.quickAction} onPress={onPress}>
-      <View
+    <TouchableOpacity
+      style={[
+        styles.actionChip,
+        {
+          backgroundColor: primary ? colors.primary : colors.card,
+          borderColor: primary ? colors.primary : colors.border,
+        },
+      ]}
+      onPress={onPress}
+      activeOpacity={0.75}
+    >
+      <Ionicons name={icon} size={16} color={primary ? '#FFF' : colors.text} />
+      <Text
         style={[
-          styles.quickActionIcon,
-          { backgroundColor: colors.backgroundSecondary },
+          styles.actionChipLabel,
+          { color: primary ? '#FFF' : colors.text },
         ]}
       >
-        <Ionicons name={icon} size={24} color={colors.primary} />
-        {badge && (
-          <View style={[styles.badge, { backgroundColor: colors.primary }]}>
-            <Text style={styles.badgeText}>{badge}</Text>
-          </View>
-        )}
-      </View>
-      <Text style={[styles.quickActionLabel, { color: colors.textSecondary }]}>
         {label}
       </Text>
+      {badge && (
+        <View style={[styles.chipBadge, { backgroundColor: primary ? 'rgba(255,255,255,0.25)' : colors.accent }]}>
+          <Text style={styles.chipBadgeText}>{badge}</Text>
+        </View>
+      )}
     </TouchableOpacity>
   );
 }
 
+// ── Styles ────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
+  container: { flex: 1 },
+  content: { paddingBottom: Spacing.xxl + 20 },
+
+  // Hero
+  hero: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.lg,
   },
-  content: {
-    padding: Spacing.md,
-    paddingBottom: Spacing.xxl,
-  },
-  valueCard: {
-    marginBottom: Spacing.md,
-  },
-  valueLabel: {
-    fontSize: FontSize.sm,
+  greeting: {
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.regular,
     marginBottom: Spacing.xs,
   },
-  valueAmount: {
-    fontSize: FontSize.display,
+  heroValue: {
+    fontSize: 42,
     fontWeight: FontWeight.bold,
+    letterSpacing: -1.5,
+    fontVariant: ['tabular-nums'],
     marginBottom: Spacing.sm,
   },
-  changeRow: {
+  changePillRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
   },
-  changeBadge: {
+  changePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
-    borderRadius: BorderRadius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: BorderRadius.full,
     gap: 4,
   },
-  changeText: {
+  changePillText: {
     fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
+    fontWeight: FontWeight.semibold,
+    fontVariant: ['tabular-nums'],
   },
-  changeLabel: {
+  changePillLabel: {
     fontSize: FontSize.sm,
   },
+
+  // All-time
   allTimeRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: Spacing.md,
+    alignItems: 'center',
+    marginTop: Spacing.lg,
     paddingTop: Spacing.md,
-    borderTopWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(128,128,128,0.15)',
   },
   allTimeLabel: {
     fontSize: FontSize.sm,
+    fontWeight: FontWeight.medium,
   },
-  allTimeValue: {
+  allTimeValues: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  allTimeAmount: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    fontVariant: ['tabular-nums'],
+  },
+  allTimePct: {
     fontSize: FontSize.sm,
     fontWeight: FontWeight.medium,
+    fontVariant: ['tabular-nums'],
   },
-  quickActions: {
+
+  // Actions
+  actionsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    gap: Spacing.sm,
+    marginBottom: Spacing.lg,
   },
-  quickAction: {
+  actionChip: {
+    flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: BorderRadius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 6,
   },
-  quickActionIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: BorderRadius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: Spacing.xs,
+  actionChipLabel: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
   },
-  quickActionLabel: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.medium,
+  chipBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: BorderRadius.xs,
+    marginLeft: 2,
   },
-  badge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.sm,
-  },
-  badgeText: {
-    color: '#FFFFFF',
-    fontSize: 10,
+  chipBadgeText: {
+    color: '#FFF',
+    fontSize: 9,
     fontWeight: FontWeight.bold,
+    letterSpacing: 0.5,
   },
-  sectionCard: {
+
+  // Sections
+  section: {
     marginBottom: Spacing.md,
+    paddingHorizontal: Spacing.lg,
   },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   sectionTitle: {
     fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
+    fontWeight: FontWeight.bold,
+    letterSpacing: -0.3,
   },
   seeAll: {
     fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
+    fontWeight: FontWeight.semibold,
   },
-  allocationBars: {
-    gap: Spacing.sm,
+  sectionCard: {
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.md,
+    ...Shadow.sm,
   },
-  allocationItem: {
-    gap: Spacing.xs,
-  },
-  allocationLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  allocationDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: Spacing.sm,
-  },
-  allocationLabel: {
-    flex: 1,
-    fontSize: FontSize.sm,
-  },
-  allocationPercent: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-  },
-  allocationBarBg: {
-    height: 6,
-    borderRadius: 3,
+
+  // Holdings
+  holdingsCard: {
+    borderRadius: BorderRadius.xl,
     overflow: 'hidden',
+    ...Shadow.sm,
   },
-  allocationBarFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  holdingItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: Spacing.sm,
-  },
-  holdingLeft: {
+  holdingRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 14,
     gap: Spacing.sm,
   },
   holdingIcon: {
     width: 40,
     height: 40,
-    borderRadius: BorderRadius.md,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  holdingSymbol: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.bold,
-    color: '#6366F1',
+  holdingInfo: {
+    flex: 1,
+    marginRight: Spacing.sm,
   },
   holdingName: {
     fontSize: FontSize.md,
-    fontWeight: FontWeight.medium,
+    fontWeight: FontWeight.semibold,
+    letterSpacing: -0.2,
   },
   holdingType: {
     fontSize: FontSize.xs,
+    marginTop: 1,
   },
-  holdingRight: {
+  holdingValues: {
     alignItems: 'flex-end',
+    gap: 3,
   },
   holdingValue: {
     fontSize: FontSize.md,
-    fontWeight: FontWeight.medium,
+    fontWeight: FontWeight.semibold,
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -0.3,
   },
-  holdingChange: {
-    fontSize: FontSize.sm,
+  holdingChangePill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.xs,
   },
-  emptyCard: {
+  holdingChangeText: {
+    fontSize: 11,
+    fontWeight: FontWeight.semibold,
+    fontVariant: ['tabular-nums'],
+  },
+
+  // Empty state
+  emptyContainer: {
     alignItems: 'center',
-    marginTop: Spacing.xl,
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.xxl,
+  },
+  emptyIconBox: {
+    width: 88,
+    height: 88,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.lg,
   },
   emptyTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
-    marginTop: Spacing.md,
+    fontSize: FontSize.xxl,
+    fontWeight: FontWeight.bold,
+    letterSpacing: -0.5,
     marginBottom: Spacing.xs,
   },
   emptySubtitle: {
-    fontSize: FontSize.sm,
+    fontSize: FontSize.md,
     textAlign: 'center',
-    marginBottom: Spacing.lg,
+    lineHeight: 22,
+    marginBottom: Spacing.xl,
   },
-  emptyButton: {
+  emptyCTA: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: 14,
+    borderRadius: BorderRadius.full,
     gap: Spacing.xs,
+    ...Shadow.md,
   },
-  emptyButtonText: {
-    color: '#FFFFFF',
+  emptyCTAText: {
+    color: '#FFF',
     fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
+    fontWeight: FontWeight.bold,
   },
 });

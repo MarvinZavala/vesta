@@ -1,7 +1,7 @@
 // Finnhub API for stock prices
 // Free tier: 60 API calls/minute
 
-const FINNHUB_API_KEY = process.env.EXPO_PUBLIC_FINNHUB_API_KEY || 'YOUR_FINNHUB_API_KEY';
+const FINNHUB_API_KEY = process.env.EXPO_PUBLIC_FINNHUB_API_KEY || '';
 const BASE_URL = 'https://finnhub.io/api/v1';
 
 export interface StockQuote {

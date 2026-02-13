@@ -2,6 +2,14 @@
 // Free tier: 30 calls/minute, 10,000 calls/month
 
 const BASE_URL = 'https://api.coingecko.com/api/v3';
+const API_KEY = process.env.EXPO_PUBLIC_COINGECKO_API_KEY || '';
+
+// Helper to add API key to URL
+function addApiKey(url: string): string {
+  if (!API_KEY) return url;
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}x_cg_demo_api_key=${API_KEY}`;
+}
 
 export interface CoinPrice {
   id: string;
@@ -56,9 +64,10 @@ export function getCoinGeckoId(symbol: string): string | null {
 
 export async function getCoinPrice(coinId: string, currency: string = 'usd'): Promise<CoinPrice | null> {
   try {
-    const response = await fetch(
+    const url = addApiKey(
       `${BASE_URL}/coins/markets?vs_currency=${currency}&ids=${coinId}&order=market_cap_desc&per_page=1&page=1&sparkline=false&price_change_percentage=24h`
     );
+    const response = await fetch(url);
 
     if (!response.ok) {
       console.error('CoinGecko API error:', response.status);
@@ -79,9 +88,10 @@ export async function getMultipleCoinPrices(
 ): Promise<CoinPrice[]> {
   try {
     const idsString = coinIds.join(',');
-    const response = await fetch(
+    const url = addApiKey(
       `${BASE_URL}/coins/markets?vs_currency=${currency}&ids=${idsString}&order=market_cap_desc&per_page=${coinIds.length}&page=1&sparkline=false&price_change_percentage=24h`
     );
+    const response = await fetch(url);
 
     if (!response.ok) {
       return [];
@@ -97,9 +107,8 @@ export async function getMultipleCoinPrices(
 
 export async function searchCoins(query: string): Promise<CoinSearchResult[]> {
   try {
-    const response = await fetch(
-      `${BASE_URL}/search?query=${encodeURIComponent(query)}`
-    );
+    const url = addApiKey(`${BASE_URL}/search?query=${encodeURIComponent(query)}`);
+    const response = await fetch(url);
 
     if (!response.ok) {
       return [];
@@ -119,9 +128,10 @@ export async function getSimplePrice(
 ): Promise<Record<string, { usd: number; usd_24h_change: number }>> {
   try {
     const idsString = coinIds.join(',');
-    const response = await fetch(
+    const url = addApiKey(
       `${BASE_URL}/simple/price?ids=${idsString}&vs_currencies=${currency}&include_24hr_change=true`
     );
+    const response = await fetch(url);
 
     if (!response.ok) {
       return {};
