@@ -60,7 +60,7 @@ export default function DashboardScreen() {
     setRefreshing(false);
   };
 
-  const isPremiumPlus = profile?.subscription_tier === 'premium_plus';
+  const isPremiumPlus = profile?.subscription_tier !== 'free';
 
   const { refreshPrices } = usePrices({
     subscriptionTier: profile?.subscription_tier || 'free',

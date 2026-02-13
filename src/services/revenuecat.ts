@@ -48,8 +48,8 @@ export const TIER_LIMITS = {
   premium: {
     maxAssets: Infinity,
     maxAlerts: Infinity,
-    maxPortfolios: 10,
-    aiChat: false,
+    maxPortfolios: Infinity,
+    aiChat: true,
     advancedAnalysis: true,
     exportData: true,
     priceRefreshInterval: 60 * 1000, // 1 minute

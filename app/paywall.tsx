@@ -3,556 +3,289 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   TouchableOpacity,
   Alert,
+  SafeAreaView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { PurchasesPackage } from 'react-native-purchases';
-import { Button, Card } from '@/components/ui';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuthStore } from '@/store/authStore';
 import { useSubscription } from '@/hooks/useSubscription';
-import { FontSize, FontWeight, Spacing, BorderRadius, Brand } from '@/constants/theme';
+import { FontSize, FontWeight, Spacing, BorderRadius } from '@/constants/theme';
 
-type PlanType = 'premium' | 'premium_plus';
 type BillingType = 'monthly' | 'yearly';
 
-const PLANS = {
-  premium: {
-    name: 'Premium',
-    monthly: 4.99,
-    yearly: 39.99,
-    features: [
-      'Unlimited assets',
-      'Real-time price updates',
-      'Multi-currency support',
-      'Unlimited price alerts',
-      'Sector & country analysis',
-      'Export to CSV/PDF',
-    ],
-  },
-  premium_plus: {
-    name: 'Premium+',
-    monthly: 9.99,
-    yearly: 79.99,
-    features: [
-      'Everything in Premium',
-      'AI Portfolio Advisor',
-      'Personalized recommendations',
-      'Risk analysis & scoring',
-      'Rebalancing suggestions',
-      'Weekly AI reports',
-    ],
-  },
-};
+const PRICE = { monthly: 4.99, yearly: 29.99 };
 
-function normalizeId(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, '_');
-}
+const FEATURES = [
+  { icon: 'infinite' as const, text: 'Unlimited assets & alerts' },
+  { icon: 'sparkles' as const, text: 'AI Portfolio Advisor' },
+  { icon: 'pulse' as const, text: 'Real-time price updates' },
+  { icon: 'pie-chart' as const, text: 'Advanced analysis & insights' },
+  { icon: 'download' as const, text: 'Export to CSV & PDF' },
+];
 
 function isYearlyPackage(pkg: PurchasesPackage): boolean {
-  const identifier = normalizeId(pkg.identifier);
-  const productIdentifier = normalizeId(pkg.product.identifier);
-  const packageType = String(pkg.packageType).toUpperCase();
-
-  return (
-    packageType === 'ANNUAL' ||
-    identifier.includes('annual') ||
-    identifier.includes('year') ||
-    identifier.includes('yearly') ||
-    productIdentifier.includes('annual') ||
-    productIdentifier.includes('year') ||
-    productIdentifier.includes('yearly')
-  );
+  const id = (pkg.identifier + ' ' + pkg.product.identifier).toLowerCase();
+  return String(pkg.packageType).toUpperCase() === 'ANNUAL' || id.includes('annual') || id.includes('year');
 }
 
 function isMonthlyPackage(pkg: PurchasesPackage): boolean {
-  const identifier = normalizeId(pkg.identifier);
-  const productIdentifier = normalizeId(pkg.product.identifier);
-  const packageType = String(pkg.packageType).toUpperCase();
-
-  return (
-    packageType === 'MONTHLY' ||
-    identifier.includes('month') ||
-    identifier.includes('monthly') ||
-    productIdentifier.includes('month') ||
-    productIdentifier.includes('monthly')
-  );
-}
-
-function packageMatchesPlan(pkg: PurchasesPackage, plan: PlanType): number {
-  const identifier = normalizeId(pkg.identifier);
-  const productIdentifier = normalizeId(pkg.product.identifier);
-  const fullId = `${identifier} ${productIdentifier}`;
-
-  const includesPlus = fullId.includes('premium_plus') || fullId.includes('plus') || fullId.includes('vesta_pro');
-  const includesPremium = fullId.includes('premium');
-
-  if (plan === 'premium_plus') {
-    if (includesPlus) return 3;
-    if (includesPremium) return 1;
-    return 0;
-  }
-
-  // Premium should not accidentally buy plus/pro package
-  if (includesPlus) return -2;
-  if (includesPremium) return 3;
-  return 1;
+  const id = (pkg.identifier + ' ' + pkg.product.identifier).toLowerCase();
+  return String(pkg.packageType).toUpperCase() === 'MONTHLY' || id.includes('month');
 }
 
 export default function PaywallScreen() {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const router = useRouter();
   const { updateSubscriptionTier } = useAuthStore();
   const { offerings, isConfigured, purchase, restore } = useSubscription();
 
-  const [selectedPlan, setSelectedPlan] = useState<PlanType>('premium_plus');
   const [billingType, setBillingType] = useState<BillingType>('yearly');
   const [isLoading, setIsLoading] = useState(false);
 
-  const plan = PLANS[selectedPlan];
-  const monthlyPrice = billingType === 'yearly' ? (plan.yearly / 12).toFixed(2) : plan.monthly;
-  const savings = billingType === 'yearly' ? Math.round((1 - plan.yearly / (plan.monthly * 12)) * 100) : 0;
+  const yearlyMonthly = (PRICE.yearly / 12).toFixed(2);
+  const savings = Math.round((1 - PRICE.yearly / (PRICE.monthly * 12)) * 100);
 
-  // Get the correct package from RevenueCat offerings
   const getSelectedPackage = (): PurchasesPackage | null => {
-    if (!offerings) return null;
-    if (offerings.availablePackages.length === 0) return null;
-
-    const scoredPackages = offerings.availablePackages
-      .map((pkg) => {
-        const planScore = packageMatchesPlan(pkg, selectedPlan);
-        const billingScore = billingType === 'yearly'
-          ? (isYearlyPackage(pkg) ? 3 : isMonthlyPackage(pkg) ? -2 : 0)
-          : (isMonthlyPackage(pkg) ? 3 : isYearlyPackage(pkg) ? -2 : 0);
-
-        const score = planScore * 10 + billingScore;
-        return { pkg, score };
-      })
-      .sort((a, b) => b.score - a.score);
-
-    const bestMatch = scoredPackages[0];
-    if (!bestMatch || bestMatch.score < 0) {
-      // As final fallback, use best billing match regardless of plan label.
-      const billingMatch = offerings.availablePackages.find((pkg) =>
-        billingType === 'yearly' ? isYearlyPackage(pkg) : isMonthlyPackage(pkg)
-      );
-      return billingMatch || offerings.availablePackages[0] || null;
-    }
-
-    return bestMatch.pkg;
+    if (!offerings?.availablePackages?.length) return null;
+    const match = offerings.availablePackages.find((pkg) =>
+      billingType === 'yearly' ? isYearlyPackage(pkg) : isMonthlyPackage(pkg)
+    );
+    return match || offerings.availablePackages[0] || null;
   };
 
   const handlePurchase = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsLoading(true);
 
-    // If RevenueCat is configured, use real purchase
     if (isConfigured) {
       const pkg = getSelectedPackage();
       if (!pkg) {
         setIsLoading(false);
-        Alert.alert('Purchase Unavailable', 'No subscription package is currently available for this plan.');
+        Alert.alert('Purchase Unavailable', 'No subscription package is currently available.');
         return;
       }
-
       const result = await purchase(pkg);
       setIsLoading(false);
-
       if (result.success) {
-        // Note: useSubscription.purchase() already syncs the tier to authStore and Supabase
-        Alert.alert(
-          'Welcome to ' + plan.name + '!',
-          'Your subscription is now active.',
-          [{ text: 'OK', onPress: () => router.back() }]
-        );
+        Alert.alert('Welcome to Vesta Pro!', 'Your subscription is now active.', [
+          { text: 'OK', onPress: () => router.back() },
+        ]);
       } else if (result.error !== 'Purchase cancelled') {
         Alert.alert('Purchase Failed', result.error || 'Please try again.');
       }
       return;
     }
 
-    // Sandbox/TestFlight mode - activate subscription for testing
     setTimeout(async () => {
       setIsLoading(false);
-      const tier = selectedPlan === 'premium_plus' ? 'premium_plus' : 'premium';
-      await updateSubscriptionTier(tier, true);
-      Alert.alert(
-        'Welcome to ' + plan.name + '!',
-        'Your subscription is now active. Enjoy unlimited access to all features.',
-        [{ text: 'Get Started', onPress: () => router.back() }]
-      );
+      await updateSubscriptionTier('premium_plus', true);
+      Alert.alert('Welcome to Vesta Pro!', 'Your subscription is now active.', [
+        { text: 'Get Started', onPress: () => router.back() },
+      ]);
     }, 1500);
   };
 
   const handleRestore = async () => {
     setIsLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
     if (isConfigured) {
       const result = await restore();
       setIsLoading(false);
-
       if (result.success && result.customerInfo) {
-        // Check if any entitlements are actually active after restore
         const hasActive = Object.keys(result.customerInfo.entitlements.active).length > 0;
-        if (hasActive) {
-          Alert.alert('Purchases Restored', 'Your subscription has been restored.', [
-            { text: 'OK', onPress: () => router.back() },
-          ]);
-        } else {
-          Alert.alert('No Purchases Found', 'No previous purchases were found for this account.');
-        }
+        Alert.alert(
+          hasActive ? 'Purchases Restored' : 'No Purchases Found',
+          hasActive ? 'Your subscription has been restored.' : 'No previous purchases were found.',
+          hasActive ? [{ text: 'OK', onPress: () => router.back() }] : undefined
+        );
       } else {
         Alert.alert('Restore Failed', result.error || 'Please try again.');
       }
     } else {
       setIsLoading(false);
-      Alert.alert('No Purchases Found', 'No previous purchases were found for this account.');
+      Alert.alert('No Purchases Found', 'No previous purchases were found.');
     }
   };
 
+  const accent = isDark ? '#34D399' : '#059669';
+
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={styles.content}
-    >
-      {/* Sandbox mode banner - only show in development */}
-      {!isConfigured && __DEV__ && (
-        <View style={[styles.demoBanner, { backgroundColor: Brand.gold + '20' }]}>
-          <Ionicons name="information-circle" size={18} color={Brand.gold} />
-          <Text style={[styles.demoBannerText, { color: Brand.gold }]}>
-            Sandbox Mode - Purchases are simulated for testing
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Close */}
+      <TouchableOpacity style={styles.closeBtn} onPress={() => router.back()} hitSlop={16}>
+        <Ionicons name="close" size={24} color={colors.textSecondary} />
+      </TouchableOpacity>
+
+      <View style={styles.body}>
+        {/* Hero */}
+        <View style={styles.hero}>
+          <View style={[styles.iconBig, { backgroundColor: accent }]}>
+            <Ionicons name="diamond" size={28} color="#FFF" />
+          </View>
+          <Text style={[styles.title, { color: colors.text }]}>Upgrade to Vesta Pro</Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            One plan. Every asset. Full power.
           </Text>
         </View>
-      )}
 
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={[styles.iconContainer, { backgroundColor: colors.primary }]}>
-          <Ionicons name="diamond" size={32} color="#FFFFFF" />
-        </View>
-        <Text style={[styles.title, { color: colors.text }]}>
-          Unlock Your Full Potential
-        </Text>
-        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-          Get unlimited access to all features and AI-powered insights
-        </Text>
-      </View>
-
-      {/* Plan Selection */}
-      <View >
-        <View style={[styles.planToggle, { backgroundColor: colors.backgroundTertiary }]}>
-          <TouchableOpacity
-            style={[
-              styles.planTab,
-              selectedPlan === 'premium' && {
-                backgroundColor: colors.primary,
-              },
-            ]}
-            onPress={() => setSelectedPlan('premium')}
-          >
-            <Text
-              style={[
-                styles.planTabText,
-                { color: selectedPlan === 'premium' ? '#FFFFFF' : colors.textSecondary },
-              ]}
-            >
-              Premium
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.planTab,
-              selectedPlan === 'premium_plus' && {
-                backgroundColor: colors.primary,
-              },
-            ]}
-            onPress={() => setSelectedPlan('premium_plus')}
-          >
-            <Text
-              style={[
-                styles.planTabText,
-                { color: selectedPlan === 'premium_plus' ? '#FFFFFF' : colors.textSecondary },
-              ]}
-            >
-              Premium+
-            </Text>
-            <View style={[styles.aiBadge, { backgroundColor: '#F59E0B' }]}>
-              <Ionicons name="sparkles" size={10} color="#FFFFFF" />
+        {/* Features */}
+        <View style={styles.features}>
+          {FEATURES.map((f, i) => (
+            <View key={i} style={styles.featureRow}>
+              <View style={[styles.featureIconWrap, { backgroundColor: accent + '12' }]}>
+                <Ionicons name={f.icon} size={16} color={accent} />
+              </View>
+              <Text style={[styles.featureText, { color: colors.text }]}>{f.text}</Text>
             </View>
-          </TouchableOpacity>
+          ))}
         </View>
-      </View>
 
-      {/* Billing Toggle */}
-      <View >
-        <View style={styles.billingToggle}>
+        {/* Pricing */}
+        <View style={styles.pricing}>
           <TouchableOpacity
             style={[
-              styles.billingOption,
+              styles.priceCard,
               {
-                backgroundColor:
-                  billingType === 'yearly'
-                    ? colors.primary + '20'
-                    : colors.backgroundSecondary,
-                borderColor:
-                  billingType === 'yearly' ? colors.primary : colors.border,
+                borderColor: billingType === 'yearly' ? accent : colors.border,
+                backgroundColor: billingType === 'yearly' ? accent + '08' : 'transparent',
               },
             ]}
             onPress={() => setBillingType('yearly')}
+            activeOpacity={0.7}
           >
-            <View style={styles.billingHeader}>
-              <Text
-                style={[
-                  styles.billingLabel,
-                  { color: billingType === 'yearly' ? colors.primary : colors.text },
-                ]}
-              >
-                Yearly
-              </Text>
-              {savings > 0 && (
-                <View style={[styles.savingsBadge, { backgroundColor: colors.gain }]}>
-                  <Text style={styles.savingsText}>Save {savings}%</Text>
+            <View style={styles.priceLeft}>
+              <View style={[styles.radio, { borderColor: billingType === 'yearly' ? accent : colors.border }]}>
+                {billingType === 'yearly' && <View style={[styles.radioFill, { backgroundColor: accent }]} />}
+              </View>
+              <View>
+                <View style={styles.priceRow}>
+                  <Text style={[styles.priceLabel, { color: colors.text }]}>Yearly</Text>
+                  <View style={[styles.saveBadge, { backgroundColor: '#F59E0B' }]}>
+                    <Text style={styles.saveText}>-{savings}%</Text>
+                  </View>
                 </View>
-              )}
+                <Text style={[styles.priceSub, { color: colors.textTertiary }]}>${yearlyMonthly}/mo</Text>
+              </View>
             </View>
-            <Text style={[styles.billingPrice, { color: colors.text }]}>
-              ${plan.yearly}/year
-            </Text>
-            <Text style={[styles.billingMonthly, { color: colors.textSecondary }]}>
-              ${monthlyPrice}/month
-            </Text>
+            <Text style={[styles.priceAmount, { color: colors.text }]}>${PRICE.yearly}<Text style={styles.pricePer}>/yr</Text></Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[
-              styles.billingOption,
+              styles.priceCard,
               {
-                backgroundColor:
-                  billingType === 'monthly'
-                    ? colors.primary + '20'
-                    : colors.backgroundSecondary,
-                borderColor:
-                  billingType === 'monthly' ? colors.primary : colors.border,
+                borderColor: billingType === 'monthly' ? accent : colors.border,
+                backgroundColor: billingType === 'monthly' ? accent + '08' : 'transparent',
               },
             ]}
             onPress={() => setBillingType('monthly')}
+            activeOpacity={0.7}
           >
-            <Text
-              style={[
-                styles.billingLabel,
-                { color: billingType === 'monthly' ? colors.primary : colors.text },
-              ]}
-            >
-              Monthly
-            </Text>
-            <Text style={[styles.billingPrice, { color: colors.text }]}>
-              ${plan.monthly}/month
-            </Text>
-            <Text style={[styles.billingMonthly, { color: colors.textSecondary }]}>
-              Cancel anytime
-            </Text>
+            <View style={styles.priceLeft}>
+              <View style={[styles.radio, { borderColor: billingType === 'monthly' ? accent : colors.border }]}>
+                {billingType === 'monthly' && <View style={[styles.radioFill, { backgroundColor: accent }]} />}
+              </View>
+              <Text style={[styles.priceLabel, { color: colors.text }]}>Monthly</Text>
+            </View>
+            <Text style={[styles.priceAmount, { color: colors.text }]}>${PRICE.monthly}<Text style={styles.pricePer}>/mo</Text></Text>
           </TouchableOpacity>
         </View>
-      </View>
 
-      {/* Features */}
-      <View >
-        <Card style={styles.featuresCard}>
-          <Text style={[styles.featuresTitle, { color: colors.text }]}>
-            {plan.name} includes:
-          </Text>
-          {plan.features.map((feature, index) => (
-            <View key={index} style={styles.featureRow}>
-              <Ionicons name="checkmark-circle" size={20} color={colors.gain} />
-              <Text style={[styles.featureText, { color: colors.text }]}>
-                {feature}
-              </Text>
-            </View>
-          ))}
-        </Card>
-      </View>
-
-      {/* CTA */}
-      <View >
-        <Button
-          title={`Start ${billingType === 'yearly' ? '7-Day Free Trial' : 'Subscription'}`}
+        {/* CTA */}
+        <TouchableOpacity
+          style={[styles.cta, { backgroundColor: accent, opacity: isLoading ? 0.7 : 1 }]}
           onPress={handlePurchase}
-          loading={isLoading}
-          fullWidth
-          size="lg"
-        />
+          activeOpacity={0.85}
+          disabled={isLoading}
+        >
+          <Text style={styles.ctaText}>
+            {isLoading ? 'Processing...' : billingType === 'yearly' ? 'Start 7-Day Free Trial' : 'Subscribe Now'}
+          </Text>
+        </TouchableOpacity>
 
         {billingType === 'yearly' && (
-          <Text style={[styles.trialNote, { color: colors.textSecondary }]}>
-            7-day free trial, then ${plan.yearly}/year. Cancel anytime.
+          <Text style={[styles.trialNote, { color: colors.textTertiary }]}>
+            7 days free, then ${PRICE.yearly}/year. Cancel anytime.
           </Text>
         )}
 
-        <TouchableOpacity onPress={handleRestore} style={styles.restoreButton}>
-          <Text style={[styles.restoreText, { color: colors.primary }]}>
-            Restore Purchases
-          </Text>
-        </TouchableOpacity>
+        {/* Footer */}
+        <View style={styles.footer}>
+          <TouchableOpacity onPress={handleRestore}>
+            <Text style={[styles.footerLink, { color: colors.textSecondary }]}>Restore Purchases</Text>
+          </TouchableOpacity>
+          <Text style={[styles.footerDot, { color: colors.textTertiary }]}> · </Text>
+          <Text style={[styles.footerLink, { color: colors.textSecondary }]}>Terms</Text>
+          <Text style={[styles.footerDot, { color: colors.textTertiary }]}> · </Text>
+          <Text style={[styles.footerLink, { color: colors.textSecondary }]}>Privacy</Text>
+        </View>
       </View>
-
-      {/* Legal */}
-      <Text style={[styles.legal, { color: colors.textTertiary }]}>
-        Payment will be charged to your Apple ID account at confirmation of
-        purchase. Subscription automatically renews unless it is canceled at
-        least 24 hours before the end of the current period. Your account will
-        be charged for renewal within 24 hours prior to the end of the current
-        period.
-      </Text>
-    </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
+  container: { flex: 1 },
+  closeBtn: { position: 'absolute', top: 56, right: 20, zIndex: 10 },
+  body: { flex: 1, justifyContent: 'center', paddingHorizontal: Spacing.lg },
+
+  // Hero
+  hero: { alignItems: 'center', marginBottom: 24 },
+  iconBig: {
+    width: 56, height: 56, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center', marginBottom: 12,
   },
-  content: {
-    padding: Spacing.lg,
-    paddingBottom: Spacing.xxl,
+  title: { fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: -0.5 },
+  subtitle: { fontSize: FontSize.md, marginTop: 4 },
+
+  // Features
+  features: { gap: 10, marginBottom: 24 },
+  featureRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  featureIconWrap: {
+    width: 32, height: 32, borderRadius: 8,
+    alignItems: 'center', justifyContent: 'center',
   },
-  demoBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.md,
-    borderRadius: BorderRadius.md,
-    marginBottom: Spacing.md,
-    gap: Spacing.sm,
+  featureText: { fontSize: 15, fontWeight: FontWeight.medium },
+
+  // Pricing
+  pricing: { gap: 10, marginBottom: 20 },
+  priceCard: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingVertical: 14,
+    borderRadius: 14, borderWidth: 2,
   },
-  demoBannerText: {
-    flex: 1,
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
+  priceLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  radio: {
+    width: 20, height: 20, borderRadius: 10, borderWidth: 2,
+    alignItems: 'center', justifyContent: 'center',
   },
-  header: {
-    alignItems: 'center',
-    marginBottom: Spacing.xl,
+  radioFill: { width: 10, height: 10, borderRadius: 5 },
+  priceRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  priceLabel: { fontSize: 15, fontWeight: FontWeight.semibold },
+  priceSub: { fontSize: 12, marginTop: 1 },
+  priceAmount: { fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: -0.3 },
+  pricePer: { fontSize: 13, fontWeight: FontWeight.regular },
+  saveBadge: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 },
+  saveText: { color: '#FFF', fontSize: 10, fontWeight: FontWeight.bold },
+
+  // CTA
+  cta: {
+    height: 52, borderRadius: 14,
+    alignItems: 'center', justifyContent: 'center',
   },
-  iconContainer: {
-    width: 72,
-    height: 72,
-    borderRadius: BorderRadius.xl,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: Spacing.md,
+  ctaText: { color: '#FFF', fontSize: 17, fontWeight: FontWeight.bold, letterSpacing: -0.3 },
+  trialNote: { fontSize: 12, textAlign: 'center', marginTop: 6 },
+
+  // Footer
+  footer: {
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
+    marginTop: 16,
   },
-  title: {
-    fontSize: FontSize.xxl,
-    fontWeight: FontWeight.bold,
-    textAlign: 'center',
-    marginBottom: Spacing.sm,
-  },
-  subtitle: {
-    fontSize: FontSize.md,
-    textAlign: 'center',
-  },
-  planToggle: {
-    flexDirection: 'row',
-    borderRadius: BorderRadius.full,
-    padding: 4,
-    marginBottom: Spacing.lg,
-  },
-  planTab: {
-    flex: 1,
-    paddingVertical: Spacing.sm,
-    alignItems: 'center',
-    borderRadius: BorderRadius.full,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 4,
-  },
-  planTabText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-  },
-  aiBadge: {
-    padding: 2,
-    borderRadius: BorderRadius.full,
-  },
-  billingToggle: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  billingOption: {
-    flex: 1,
-    padding: Spacing.md,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 2,
-  },
-  billingHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.xs,
-  },
-  billingLabel: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-  },
-  savingsBadge: {
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.full,
-  },
-  savingsText: {
-    color: '#FFFFFF',
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-  },
-  billingPrice: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-  },
-  billingMonthly: {
-    fontSize: FontSize.sm,
-    marginTop: 2,
-  },
-  featuresCard: {
-    marginBottom: Spacing.lg,
-  },
-  featuresTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
-    marginBottom: Spacing.md,
-  },
-  featureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.sm,
-  },
-  featureText: {
-    fontSize: FontSize.md,
-    flex: 1,
-  },
-  trialNote: {
-    fontSize: FontSize.sm,
-    textAlign: 'center',
-    marginTop: Spacing.sm,
-  },
-  restoreButton: {
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-    marginTop: Spacing.sm,
-  },
-  restoreText: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-  },
-  legal: {
-    fontSize: FontSize.xs,
-    textAlign: 'center',
-    marginTop: Spacing.lg,
-    lineHeight: 18,
-  },
+  footerLink: { fontSize: 12, fontWeight: FontWeight.medium },
+  footerDot: { fontSize: 12 },
 });

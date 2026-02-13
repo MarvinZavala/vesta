@@ -35,7 +35,7 @@ export default function AnalysisScreen() {
   const { summary, holdingsWithPrices } = usePortfolioStore();
 
   const isPremium = profile?.subscription_tier !== 'free';
-  const isPremiumPlus = profile?.subscription_tier === 'premium_plus';
+  const isPremiumPlus = profile?.subscription_tier !== 'free';
 
   const assetTypeData = summary?.allocation_by_type
     ? Object.entries(summary.allocation_by_type).filter(([_, v]) => v > 0).sort((a, b) => b[1] - a[1])

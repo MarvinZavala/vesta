@@ -135,7 +135,7 @@ export default function AIChatScreen() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(false);
 
-  const isPremiumPlus = profile?.subscription_tier === 'premium_plus';
+  const isPremiumPlus = profile?.subscription_tier !== 'free';
 
   useEffect(() => {
     if (!isPremiumPlus) router.replace('/paywall');

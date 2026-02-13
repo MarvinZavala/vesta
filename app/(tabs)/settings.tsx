@@ -97,7 +97,7 @@ export default function SettingsScreen() {
   };
 
   const isFree = profile?.subscription_tier === 'free';
-  const tierLabel = { free: 'Free', premium: 'Premium', premium_plus: 'Premium+' }[profile?.subscription_tier || 'free'];
+  const tierLabel = profile?.subscription_tier === 'free' ? 'Free' : 'Vesta Pro';
 
   // ── Section data ──
   const preferencesRows: RowItem[] = [

@@ -19,7 +19,8 @@
       "icon": "./assets/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Vesta needs camera access to scan documents.",
-        "NSPhotoLibraryUsageDescription": "Vesta needs photo library access to upload images."
+        "NSPhotoLibraryUsageDescription": "Vesta needs photo library access to upload images.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
