@@ -19,7 +19,15 @@ const TIME_PERIODS = [
 ];
 
 // Asset types that have API price history
-const CHARTABLE_TYPES: AssetType[] = ['stock', 'etf', 'mutual_fund', 'crypto'];
+const CHARTABLE_TYPES: AssetType[] = [
+  'stock',
+  'etf',
+  'mutual_fund',
+  'crypto',
+  'commodity_gold',
+  'commodity_silver',
+  'commodity_platinum',
+];
 
 interface PriceChartProps {
   symbol: string;

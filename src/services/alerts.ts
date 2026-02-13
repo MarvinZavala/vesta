@@ -225,25 +225,38 @@ export async function checkAlertsForTrigger(
 ): Promise<AlertWithHolding[]> {
   const alerts = await getAlerts();
   const triggeredAlerts: AlertWithHolding[] = [];
+  const normalizedPriceMap = new Map<string, number>();
+
+  for (const [symbol, price] of priceMap.entries()) {
+    normalizedPriceMap.set(symbol.toUpperCase(), price);
+  }
 
   for (const alert of alerts) {
     if (!alert.is_active || alert.triggered_at) continue;
 
-    const symbol = alert.holding_symbol;
-    if (!symbol || !alert.target_value) continue;
-
-    const currentPrice = priceMap.get(symbol) || alert.current_price;
-    if (!currentPrice) continue;
+    const symbol = alert.holding_symbol?.toUpperCase() || null;
+    const currentPrice = symbol
+      ? (normalizedPriceMap.get(symbol) ?? alert.current_price)
+      : alert.current_price;
 
     let shouldTrigger = false;
 
-    if (alert.alert_type === 'price_above' && currentPrice >= alert.target_value) {
-      shouldTrigger = true;
-    } else if (alert.alert_type === 'price_below' && currentPrice <= alert.target_value) {
-      shouldTrigger = true;
+    if (alert.alert_type === 'price_above' || alert.alert_type === 'price_below') {
+      if (alert.target_value == null || !symbol || !Number.isFinite(currentPrice) || currentPrice <= 0) {
+        continue;
+      }
+
+      if (alert.alert_type === 'price_above' && currentPrice >= alert.target_value) {
+        shouldTrigger = true;
+      } else if (alert.alert_type === 'price_below' && currentPrice <= alert.target_value) {
+        shouldTrigger = true;
+      }
     } else if (alert.alert_type === 'maturity' && alert.target_date) {
       const today = new Date();
+      today.setHours(0, 0, 0, 0);
       const maturityDate = new Date(alert.target_date);
+      maturityDate.setHours(0, 0, 0, 0);
+
       // Trigger 7 days before maturity
       const daysUntilMaturity = Math.ceil(
         (maturityDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)

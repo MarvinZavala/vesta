@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Platform,
   Alert,
   Keyboard,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,6 +30,12 @@ import {
   searchAssets,
   getFeaturedAssets,
 } from '@/data/popularAssets';
+import {
+  searchStocks,
+  validateStockSymbol,
+  isFinnhubTypeCompatible,
+} from '@/services/prices/finnhub';
+import { searchCoins, resolveCoinGeckoId } from '@/services/prices/coingecko';
 
 interface AddAssetSheetProps {
   visible: boolean;
@@ -128,6 +135,21 @@ function getDefaultName(type: AssetType): string {
   }
 }
 
+function getDefaultSymbol(type: AssetType): string {
+  switch (type) {
+    case 'commodity_gold': return 'XAU';
+    case 'commodity_silver': return 'XAG';
+    case 'commodity_platinum': return 'XPT';
+    default: return '';
+  }
+}
+
+function getCanonicalSymbol(type: AssetType, rawSymbol: string): string {
+  const symbol = rawSymbol.trim().toUpperCase();
+  const metalSymbol = getDefaultSymbol(type);
+  return metalSymbol || symbol;
+}
+
 export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProps) {
   const { colors } = useTheme();
   const router = useRouter();
@@ -141,6 +163,9 @@ export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProp
   // Search
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedAsset, setSelectedAsset] = useState<PopularAsset | null>(null);
+  const [apiSearchResults, setApiSearchResults] = useState<PopularAsset[]>([]);
+  const [isApiSearching, setIsApiSearching] = useState(false);
+  const apiSearchRequestIdRef = useRef(0);
 
   // Common fields
   const [name, setName] = useState('');
@@ -168,13 +193,76 @@ export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProp
   // ── Derived values ──────────────────────────────────────────────────────
   const searchResults = useMemo(() => {
     if (!searchQuery || searchQuery.length < 1) return [];
-    return searchAssets(searchQuery, selectedType || undefined);
-  }, [searchQuery, selectedType]);
+    const localResults = searchAssets(searchQuery, selectedType || undefined);
+    const mergedByKey = new Map<string, PopularAsset>();
+
+    for (const asset of [...localResults, ...apiSearchResults]) {
+      mergedByKey.set(`${asset.type}:${asset.symbol}`, asset);
+    }
+
+    return Array.from(mergedByKey.values()).slice(0, 12);
+  }, [searchQuery, selectedType, apiSearchResults]);
 
   const featuredAssets = useMemo(() => {
     if (!selectedType) return [];
     return getFeaturedAssets(selectedType);
   }, [selectedType]);
+
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (!selectedType || !SEARCHABLE_TYPES.includes(selectedType) || query.length < 2) {
+      apiSearchRequestIdRef.current += 1;
+      setApiSearchResults([]);
+      setIsApiSearching(false);
+      return;
+    }
+
+    const requestId = apiSearchRequestIdRef.current + 1;
+    apiSearchRequestIdRef.current = requestId;
+    setIsApiSearching(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        let results: PopularAsset[] = [];
+
+        if (selectedType === 'crypto') {
+          const coins = await searchCoins(query);
+          results = coins.slice(0, 12).map((coin) => ({
+            symbol: coin.symbol.toUpperCase(),
+            name: coin.name,
+            type: 'crypto',
+          }));
+        } else {
+          const marketType = selectedType as 'stock' | 'etf' | 'mutual_fund';
+          const stocks = await searchStocks(query);
+          results = stocks
+            .filter((item) => isFinnhubTypeCompatible(item.type, marketType))
+            .slice(0, 12)
+            .map((item) => ({
+              symbol: (item.displaySymbol || item.symbol).toUpperCase(),
+              name: item.description || item.displaySymbol || item.symbol,
+              type: marketType,
+              country: 'US',
+            }));
+        }
+
+        if (apiSearchRequestIdRef.current === requestId) {
+          setApiSearchResults(results);
+        }
+      } catch (error) {
+        console.error('Live search failed:', error);
+        if (apiSearchRequestIdRef.current === requestId) {
+          setApiSearchResults([]);
+        }
+      } finally {
+        if (apiSearchRequestIdRef.current === requestId) {
+          setIsApiSearching(false);
+        }
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery, selectedType]);
 
   const typeConfig = useMemo(() => ALL_TYPES.find(t => t.type === selectedType), [selectedType]);
   const formConfig = useMemo(() => selectedType ? getFormConfig(selectedType) : null, [selectedType]);
@@ -230,10 +318,16 @@ export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProp
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedType(type);
     setErrors({});
+    setSelectedAsset(null);
+    setSearchQuery('');
+    setApiSearchResults([]);
+    setIsApiSearching(false);
+    setSector('');
 
     // Pre-fill name for metals
     const defaultName = getDefaultName(type);
-    if (defaultName) setName(defaultName);
+    setName(defaultName || '');
+    setSymbol(getDefaultSymbol(type));
 
     if (SEARCHABLE_TYPES.includes(type)) {
       setStep('search');
@@ -263,6 +357,7 @@ export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProp
     if (step === 'details' && selectedType && SEARCHABLE_TYPES.includes(selectedType)) {
       setStep('search');
       setSelectedAsset(null);
+      setApiSearchResults([]);
     } else {
       setStep('type');
       setSelectedType(null);
@@ -309,6 +404,9 @@ export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProp
     } else {
       // Standard: stocks, ETFs, crypto, metals
       if (!name.trim() && !selectedAsset) newErrors.name = 'Enter a name';
+      if (SEARCHABLE_TYPES.includes(selectedType) && !selectedAsset && !symbol.trim()) {
+        newErrors.symbol = 'Enter a valid ticker symbol';
+      }
       const qty = parseFloat(quantity);
       if (isNaN(qty) || qty <= 0) newErrors.quantity = 'Enter a valid amount';
     }
@@ -330,12 +428,44 @@ export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProp
         return;
       }
 
+      // Validate and normalize symbol for searchable assets before saving
+      let canonicalSymbol = getCanonicalSymbol(selectedType, selectedAsset?.symbol || symbol);
+      let finalName = name.trim() || selectedAsset?.name || '';
+
+      if (selectedType === 'crypto') {
+        const normalizedCrypto = canonicalSymbol.trim().toUpperCase();
+        const resolvedCoinId = await resolveCoinGeckoId(normalizedCrypto);
+        if (!resolvedCoinId) {
+          setError('symbol', 'Ticker not recognized. Pick one from search results.');
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          Alert.alert('Invalid Ticker', 'Crypto symbol not recognized. Search and select a listed coin.');
+          return;
+        }
+        canonicalSymbol = normalizedCrypto;
+      } else if (
+        selectedType === 'stock' ||
+        selectedType === 'etf' ||
+        selectedType === 'mutual_fund'
+      ) {
+        const validated = await validateStockSymbol(canonicalSymbol, selectedType);
+        if (!validated) {
+          setError('symbol', 'Invalid or unsupported ticker. Use search to pick a listed symbol.');
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          Alert.alert('Invalid Ticker', 'That stock ticker is invalid or unsupported by the price providers.');
+          return;
+        }
+        canonicalSymbol = validated.symbol;
+        if (!finalName) {
+          finalName = validated.description || canonicalSymbol;
+        }
+      }
+
       // Build holding data based on asset type
       let holdingData: any = {
         portfolio_id: portfolio.id,
         asset_type: selectedType,
-        name: name.trim(),
-        symbol: symbol.trim() || null,
+        name: finalName,
+        symbol: canonicalSymbol || null,
         currency: 'USD',
         sector: sector || null,
         country: selectedAsset?.country || 'US',
@@ -419,7 +549,7 @@ export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProp
   };
 
   const showSearchResults = searchQuery.length > 0 && searchResults.length > 0;
-  const showNoResults = searchQuery.length > 1 && searchResults.length === 0;
+  const showNoResults = searchQuery.length > 1 && searchResults.length === 0 && !isApiSearching;
 
   // ── Render ──────────────────────────────────────────────────────────────
   return (
@@ -540,6 +670,16 @@ export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProp
                   </View>
                 )}
 
+                {/* Live search loading state */}
+                {isApiSearching && searchQuery.length > 1 && !showSearchResults && (
+                  <View style={styles.searchLoading}>
+                    <ActivityIndicator size="small" color={colors.primary} />
+                    <Text style={[styles.searchLoadingText, { color: colors.textSecondary }]}>
+                      Searching live market symbols...
+                    </Text>
+                  </View>
+                )}
+
                 {/* No Results */}
                 {showNoResults && (
                   <View style={styles.noResults}>
@@ -657,13 +797,13 @@ export function AddAssetSheet({ visible, onClose, onSuccess }: AddAssetSheetProp
 
                   {/* Symbol (manual entry for searchable types) */}
                   {!selectedAsset && SEARCHABLE_TYPES.includes(selectedType) && (
-                    <FormField label="Ticker Symbol" colors={colors}>
+                    <FormField label="Ticker Symbol" error={errors.symbol} colors={colors}>
                       <TextInput
-                        style={[styles.input, { backgroundColor: colors.card, color: colors.text, borderColor: colors.border }]}
+                        style={[styles.input, { backgroundColor: colors.card, color: colors.text, borderColor: errors.symbol ? colors.error : colors.border }]}
                         placeholder="e.g., AAPL"
                         placeholderTextColor={colors.textTertiary}
                         value={symbol}
-                        onChangeText={(t) => setSymbol(t.toUpperCase())}
+                        onChangeText={(t) => { setSymbol(t.toUpperCase()); clearError('symbol'); }}
                         autoCapitalize="characters"
                       />
                     </FormField>
@@ -1188,6 +1328,14 @@ const styles = StyleSheet.create({
   resultInfo: { flex: 1 },
   resultSymbol: { fontSize: FontSize.md, fontWeight: FontWeight.semibold },
   resultName: { fontSize: FontSize.sm, marginTop: 2 },
+  searchLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  searchLoadingText: { fontSize: FontSize.sm },
 
   noResults: {
     alignItems: 'center',

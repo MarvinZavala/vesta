@@ -4,6 +4,8 @@ import { AppState, AppStateStatus } from 'react-native';
 import { usePortfolioStore } from '@/store/portfolioStore';
 import { fetchPricesForHoldings, loadCachedPrices, UnifiedPrice } from '@/services/prices';
 import { Holding, PriceCache } from '@/types/database';
+import { checkAlertsForTrigger, markAlertTriggered } from '@/services/alerts';
+import { sendAlertNotification } from '@/services/notifications';
 
 // Refresh intervals based on subscription tier
 const REFRESH_INTERVALS = {
@@ -16,6 +18,16 @@ interface UsePricesOptions {
   subscriptionTier?: 'free' | 'premium' | 'premium_plus';
   autoRefresh?: boolean;
 }
+
+const TRADEABLE_TYPES: Holding['asset_type'][] = [
+  'stock',
+  'etf',
+  'mutual_fund',
+  'crypto',
+  'commodity_gold',
+  'commodity_silver',
+  'commodity_platinum',
+];
 
 export function usePrices(options: UsePricesOptions = {}) {
   const { subscriptionTier = 'free', autoRefresh = true } = options;
@@ -40,6 +52,34 @@ export function usePrices(options: UsePricesOptions = {}) {
     }));
   }, []);
 
+  const checkAndTriggerAlerts = useCallback(async (prices: Map<string, UnifiedPrice>) => {
+    try {
+      const priceMap = new Map<string, number>();
+      for (const price of prices.values()) {
+        priceMap.set(price.symbol.toUpperCase(), price.price);
+      }
+
+      const triggeredAlerts = await checkAlertsForTrigger(priceMap);
+      if (triggeredAlerts.length === 0) return;
+
+      for (const alert of triggeredAlerts) {
+        const normalizedSymbol = alert.holding_symbol?.toUpperCase() || '';
+        const currentPrice = normalizedSymbol
+          ? (priceMap.get(normalizedSymbol) ?? alert.current_price)
+          : alert.current_price;
+
+        try {
+          await sendAlertNotification(alert, currentPrice);
+          await markAlertTriggered(alert.id);
+        } catch (error) {
+          console.error(`Failed to process triggered alert ${alert.id}:`, error);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking triggered alerts:', error);
+    }
+  }, []);
+
   // Fetch prices for all holdings
   const fetchPrices = useCallback(async (force: boolean = false) => {
     // Prevent concurrent fetches
@@ -55,12 +95,17 @@ export function usePrices(options: UsePricesOptions = {}) {
     }
 
     // Filter holdings that have tradeable symbols
-    const tradeableHoldings = holdings.filter(h =>
-      h.symbol &&
-      ['stock', 'etf', 'mutual_fund', 'crypto', 'commodity_gold', 'commodity_silver', 'commodity_platinum'].includes(h.asset_type)
-    );
+    const tradeableHoldings = holdings.filter((holding) => {
+      if (!TRADEABLE_TYPES.includes(holding.asset_type)) return false;
+      const isMetal =
+        holding.asset_type === 'commodity_gold' ||
+        holding.asset_type === 'commodity_silver' ||
+        holding.asset_type === 'commodity_platinum';
+      return isMetal || !!holding.symbol;
+    });
 
     if (tradeableHoldings.length === 0) {
+      await checkAndTriggerAlerts(new Map());
       return;
     }
 
@@ -74,12 +119,14 @@ export function usePrices(options: UsePricesOptions = {}) {
       if (priceCacheArray.length > 0) {
         updatePrices(priceCacheArray);
       }
+
+      await checkAndTriggerAlerts(prices);
     } catch (error) {
       console.error('Error fetching prices:', error);
     } finally {
       isFetchingRef.current = false;
     }
-  }, [holdings, subscriptionTier, updatePrices, convertToPriceCache]);
+  }, [holdings, subscriptionTier, updatePrices, convertToPriceCache, checkAndTriggerAlerts]);
 
   // Load cached prices from Supabase on mount
   const loadCached = useCallback(async () => {

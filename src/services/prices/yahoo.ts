@@ -3,6 +3,12 @@
 
 const BASE_URL = 'https://query1.finance.yahoo.com/v8/finance/chart';
 
+export interface YahooQuote {
+  price: number;
+  change: number;
+  changePercent: number;
+}
+
 /**
  * Map days count to Yahoo Finance range + interval parameters
  */
@@ -50,5 +56,50 @@ export async function getYahooChart(
   } catch (error) {
     console.error('Yahoo Finance chart error:', error);
     return [];
+  }
+}
+
+/**
+ * Fetch near real-time quote data from Yahoo chart endpoint.
+ * Used as fallback when Finnhub quote is restricted.
+ */
+export async function getYahooQuote(symbol: string): Promise<YahooQuote | null> {
+  try {
+    const normalized = symbol.trim().toUpperCase();
+    if (!normalized) return null;
+
+    const url = `${BASE_URL}/${encodeURIComponent(normalized)}?range=2d&interval=1d&includePrePost=false`;
+    const response = await fetch(url);
+    if (!response.ok) return null;
+
+    const json = await response.json();
+    const result = json?.chart?.result?.[0];
+    if (!result) return null;
+
+    const meta = result.meta || {};
+    const closes: (number | null)[] = result.indicators?.quote?.[0]?.close || [];
+    const latestClose = closes.length > 0 ? closes[closes.length - 1] : null;
+    const prevCloseFromSeries = closes.length > 1 ? closes[closes.length - 2] : null;
+
+    // Prefer market metadata for "now", then fallback to latest close.
+    const latestPrice = Number(meta.regularMarketPrice ?? latestClose);
+    const previousClose = Number(meta.chartPreviousClose ?? meta.previousClose ?? prevCloseFromSeries);
+
+    if (!Number.isFinite(latestPrice) || latestPrice <= 0) {
+      return null;
+    }
+
+    const validPrevClose = Number.isFinite(previousClose) && previousClose > 0 ? previousClose : latestPrice;
+    const change = latestPrice - validPrevClose;
+    const changePercent = validPrevClose > 0 ? (change / validPrevClose) * 100 : 0;
+
+    return {
+      price: latestPrice,
+      change,
+      changePercent,
+    };
+  } catch (error) {
+    console.error('Yahoo Finance quote error:', error);
+    return null;
   }
 }

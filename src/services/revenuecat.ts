@@ -148,9 +148,47 @@ export async function getCustomerInfo(): Promise<CustomerInfo | null> {
  * Derive tier from a CustomerInfo object (pure, no async)
  */
 function deriveTierFromCustomerInfo(customerInfo: CustomerInfo): SubscriptionTier {
+  const activeEntitlementIds = Object.keys(customerInfo.entitlements.active || {});
+  const normalizedEntitlementIds = activeEntitlementIds.map((id) =>
+    id.toLowerCase().replace(/\s+/g, '_')
+  );
+
+  if (
+    normalizedEntitlementIds.some((id) =>
+      id === 'vesta_pro' ||
+      id.includes('premium_plus') ||
+      id.endsWith('_plus') ||
+      id.endsWith('_pro')
+    )
+  ) {
+    return 'premium_plus';
+  }
+
+  if (
+    normalizedEntitlementIds.some((id) => id === 'premium' || id.includes('premium'))
+  ) {
+    return 'premium';
+  }
+
+  const activeProductIds = [
+    ...(customerInfo.activeSubscriptions || []),
+    ...Object.values(customerInfo.entitlements.active || {})
+      .map((entitlement) => entitlement.productIdentifier)
+      .filter((productId): productId is string => !!productId),
+  ].map((id) => id.toLowerCase());
+
+  if (activeProductIds.some((id) => id.includes('premium_plus') || id.includes('plus') || id.includes('pro'))) {
+    return 'premium_plus';
+  }
+  if (activeProductIds.some((id) => id.includes('premium'))) {
+    return 'premium';
+  }
+
+  // Backward compatibility for explicit entitlement constants
   if (customerInfo.entitlements.active[ENTITLEMENTS.VESTA_PRO]) return 'premium_plus';
   if (customerInfo.entitlements.active[ENTITLEMENTS.PREMIUM_PLUS]) return 'premium_plus';
   if (customerInfo.entitlements.active[ENTITLEMENTS.PREMIUM]) return 'premium';
+
   return 'free';
 }
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -50,11 +49,65 @@ const PLANS = {
   },
 };
 
+function normalizeId(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, '_');
+}
+
+function isYearlyPackage(pkg: PurchasesPackage): boolean {
+  const identifier = normalizeId(pkg.identifier);
+  const productIdentifier = normalizeId(pkg.product.identifier);
+  const packageType = String(pkg.packageType).toUpperCase();
+
+  return (
+    packageType === 'ANNUAL' ||
+    identifier.includes('annual') ||
+    identifier.includes('year') ||
+    identifier.includes('yearly') ||
+    productIdentifier.includes('annual') ||
+    productIdentifier.includes('year') ||
+    productIdentifier.includes('yearly')
+  );
+}
+
+function isMonthlyPackage(pkg: PurchasesPackage): boolean {
+  const identifier = normalizeId(pkg.identifier);
+  const productIdentifier = normalizeId(pkg.product.identifier);
+  const packageType = String(pkg.packageType).toUpperCase();
+
+  return (
+    packageType === 'MONTHLY' ||
+    identifier.includes('month') ||
+    identifier.includes('monthly') ||
+    productIdentifier.includes('month') ||
+    productIdentifier.includes('monthly')
+  );
+}
+
+function packageMatchesPlan(pkg: PurchasesPackage, plan: PlanType): number {
+  const identifier = normalizeId(pkg.identifier);
+  const productIdentifier = normalizeId(pkg.product.identifier);
+  const fullId = `${identifier} ${productIdentifier}`;
+
+  const includesPlus = fullId.includes('premium_plus') || fullId.includes('plus') || fullId.includes('vesta_pro');
+  const includesPremium = fullId.includes('premium');
+
+  if (plan === 'premium_plus') {
+    if (includesPlus) return 3;
+    if (includesPremium) return 1;
+    return 0;
+  }
+
+  // Premium should not accidentally buy plus/pro package
+  if (includesPlus) return -2;
+  if (includesPremium) return 3;
+  return 1;
+}
+
 export default function PaywallScreen() {
   const { colors } = useTheme();
   const router = useRouter();
-  const { profile, updateSubscriptionTier } = useAuthStore();
-  const { offerings, isLoading: subLoading, isConfigured, purchase, restore } = useSubscription();
+  const { updateSubscriptionTier } = useAuthStore();
+  const { offerings, isConfigured, purchase, restore } = useSubscription();
 
   const [selectedPlan, setSelectedPlan] = useState<PlanType>('premium_plus');
   const [billingType, setBillingType] = useState<BillingType>('yearly');
@@ -67,19 +120,30 @@ export default function PaywallScreen() {
   // Get the correct package from RevenueCat offerings
   const getSelectedPackage = (): PurchasesPackage | null => {
     if (!offerings) return null;
+    if (offerings.availablePackages.length === 0) return null;
 
-    // Try new product IDs first (monthly/yearly), then legacy IDs
-    const packageId = billingType === 'yearly' ? 'yearly' : 'monthly';
-    const legacyPackageId = selectedPlan === 'premium_plus'
-      ? billingType === 'yearly' ? 'vesta_premium_plus_yearly' : 'vesta_premium_plus_monthly'
-      : billingType === 'yearly' ? 'vesta_premium_yearly' : 'vesta_premium_monthly';
+    const scoredPackages = offerings.availablePackages
+      .map((pkg) => {
+        const planScore = packageMatchesPlan(pkg, selectedPlan);
+        const billingScore = billingType === 'yearly'
+          ? (isYearlyPackage(pkg) ? 3 : isMonthlyPackage(pkg) ? -2 : 0)
+          : (isMonthlyPackage(pkg) ? 3 : isYearlyPackage(pkg) ? -2 : 0);
 
-    // Find package by new ID or legacy ID
-    return offerings.availablePackages.find(
-      pkg => pkg.identifier === packageId ||
-             pkg.identifier === legacyPackageId ||
-             pkg.identifier === `$rc_${billingType}` // RevenueCat default naming
-    ) || offerings.availablePackages[0] || null;
+        const score = planScore * 10 + billingScore;
+        return { pkg, score };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const bestMatch = scoredPackages[0];
+    if (!bestMatch || bestMatch.score < 0) {
+      // As final fallback, use best billing match regardless of plan label.
+      const billingMatch = offerings.availablePackages.find((pkg) =>
+        billingType === 'yearly' ? isYearlyPackage(pkg) : isMonthlyPackage(pkg)
+      );
+      return billingMatch || offerings.availablePackages[0] || null;
+    }
+
+    return bestMatch.pkg;
   };
 
   const handlePurchase = async () => {
@@ -89,22 +153,26 @@ export default function PaywallScreen() {
     // If RevenueCat is configured, use real purchase
     if (isConfigured) {
       const pkg = getSelectedPackage();
-      if (pkg) {
-        const result = await purchase(pkg);
+      if (!pkg) {
         setIsLoading(false);
-
-        if (result.success) {
-          // Note: useSubscription.purchase() already syncs the tier to authStore and Supabase
-          Alert.alert(
-            'Welcome to ' + plan.name + '!',
-            'Your subscription is now active.',
-            [{ text: 'OK', onPress: () => router.back() }]
-          );
-        } else if (result.error !== 'Purchase cancelled') {
-          Alert.alert('Purchase Failed', result.error || 'Please try again.');
-        }
+        Alert.alert('Purchase Unavailable', 'No subscription package is currently available for this plan.');
         return;
       }
+
+      const result = await purchase(pkg);
+      setIsLoading(false);
+
+      if (result.success) {
+        // Note: useSubscription.purchase() already syncs the tier to authStore and Supabase
+        Alert.alert(
+          'Welcome to ' + plan.name + '!',
+          'Your subscription is now active.',
+          [{ text: 'OK', onPress: () => router.back() }]
+        );
+      } else if (result.error !== 'Purchase cancelled') {
+        Alert.alert('Purchase Failed', result.error || 'Please try again.');
+      }
+      return;
     }
 
     // Sandbox/TestFlight mode - activate subscription for testing

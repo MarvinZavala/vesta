@@ -32,6 +32,18 @@ interface PortfolioState {
   clearError: () => void;
 }
 
+const METAL_SYMBOL_BY_TYPE: Partial<Record<AssetType, string>> = {
+  commodity_gold: 'XAU',
+  commodity_silver: 'XAG',
+  commodity_platinum: 'XPT',
+};
+
+function getPriceKeySymbol(holding: Holding): string | null {
+  const metalSymbol = METAL_SYMBOL_BY_TYPE[holding.asset_type];
+  if (metalSymbol) return metalSymbol;
+  return holding.symbol ? holding.symbol.toUpperCase() : null;
+}
+
 export const usePortfolioStore = create<PortfolioState>((set, get) => ({
   portfolios: [],
   activePortfolio: null,
@@ -243,7 +255,8 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
     const allocationByCountry: Record<string, number> = {};
 
     const holdingsWithPrices: HoldingWithPrice[] = holdings.map(holding => {
-      const priceKey = `${holding.asset_type}:${holding.symbol}`;
+      const keySymbol = getPriceKeySymbol(holding);
+      const priceKey = `${holding.asset_type}:${keySymbol ?? ''}`;
       const cachedPrice = priceCache[priceKey];
 
       // Use cached price, manual price, or cost basis as fallback
@@ -257,7 +270,7 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
       totalValue += currentValue;
       totalCostBasis += costBasisTotal;
 
-      if (cachedPrice?.price_change_24h) {
+      if (cachedPrice?.price_change_24h != null) {
         totalDayChange += cachedPrice.price_change_24h * holding.quantity;
       }
 

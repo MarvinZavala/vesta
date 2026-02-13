@@ -133,6 +133,17 @@ export default function AssetDetailScreen() {
 
   const iconName = ASSET_TYPE_ICONS[holding.asset_type] || 'cube';
   const typeLabel = ASSET_TYPE_LABELS[holding.asset_type] || holding.asset_type;
+  const chartSymbol = holding.symbol || (
+    holding.asset_type === 'commodity_gold'
+      ? 'XAU'
+      : holding.asset_type === 'commodity_silver'
+      ? 'XAG'
+      : holding.asset_type === 'commodity_platinum'
+      ? 'XPT'
+      : ''
+  );
+  const isChartableType = ['stock', 'etf', 'mutual_fund', 'crypto', 'commodity_gold', 'commodity_silver', 'commodity_platinum']
+    .includes(holding.asset_type);
 
   return (
     <>
@@ -222,10 +233,10 @@ export default function AssetDetailScreen() {
         </AnimatedCardWrapper>
 
         {/* Price Chart - only for tradeable assets */}
-        {holding.symbol && ['stock', 'etf', 'mutual_fund', 'crypto'].includes(holding.asset_type) && (
+        {chartSymbol && isChartableType && (
           <AnimatedCardWrapper index={1}>
             <PriceChart
-              symbol={holding.symbol}
+              symbol={chartSymbol}
               assetType={holding.asset_type}
               costBasis={holding.cost_basis ?? undefined}
             />

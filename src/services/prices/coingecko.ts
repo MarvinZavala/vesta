@@ -58,8 +58,26 @@ const SYMBOL_TO_ID: Record<string, string> = {
   FIL: 'filecoin',
 };
 
+const dynamicSymbolToId = new Map<string, string>();
+
 export function getCoinGeckoId(symbol: string): string | null {
-  return SYMBOL_TO_ID[symbol.toUpperCase()] || null;
+  const normalized = symbol.toUpperCase();
+  return dynamicSymbolToId.get(normalized) || SYMBOL_TO_ID[normalized] || null;
+}
+
+export async function resolveCoinGeckoId(symbol: string): Promise<string | null> {
+  const normalized = symbol.toUpperCase().trim();
+  if (!normalized) return null;
+
+  const staticOrCachedId = getCoinGeckoId(normalized);
+  if (staticOrCachedId) return staticOrCachedId;
+
+  const results = await searchCoins(normalized);
+  const exact = results.find((coin) => coin.symbol.toUpperCase() === normalized);
+  if (!exact) return null;
+
+  dynamicSymbolToId.set(normalized, exact.id);
+  return exact.id;
 }
 
 export async function getCoinPrice(coinId: string, currency: string = 'usd'): Promise<CoinPrice | null> {

@@ -2,11 +2,16 @@
 // Coordinates fetching prices from multiple sources
 
 import { getStockQuote, getMultipleStockQuotes, getStockCandles, StockQuote } from './finnhub';
-import { getCoinPrice, getMultipleCoinPrices, getCoinGeckoId, getCoinMarketChart, CoinPrice } from './coingecko';
-import { getMetalPrice, getMetalSymbol, MetalPrice } from './metals';
-import { getYahooChart } from './yahoo';
+import {
+  getCoinPrice,
+  getMultipleCoinPrices,
+  getCoinMarketChart,
+  resolveCoinGeckoId,
+} from './coingecko';
+import { getMetalPrice, getMetalSymbol } from './metals';
+import { getYahooChart, getYahooQuote, YahooQuote } from './yahoo';
 import { supabase } from '../supabase';
-import { AssetType, PriceCache, Holding } from '@/types/database';
+import { AssetType, Holding } from '@/types/database';
 
 export interface UnifiedPrice {
   symbol: string;
@@ -24,9 +29,47 @@ const priceCache = new Map<string, UnifiedPrice>();
 const CACHE_DURATION = 60 * 1000; // 1 minute for stocks
 const CRYPTO_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes for crypto
 const METALS_CACHE_DURATION = 60 * 60 * 1000; // 1 hour for metals
+const METAL_HISTORY_SYMBOL_BY_TYPE: Partial<Record<AssetType, string>> = {
+  commodity_gold: 'GC=F',
+  commodity_silver: 'SI=F',
+  commodity_platinum: 'PL=F',
+};
 
 function getCacheKey(symbol: string, assetType: AssetType): string {
   return `${assetType}:${symbol}`;
+}
+
+function getNormalizedSymbol(symbol: string | null, assetType: AssetType): string | null {
+  if (assetType === 'commodity_gold' || assetType === 'commodity_silver' || assetType === 'commodity_platinum') {
+    return getMetalSymbol(assetType);
+  }
+  return symbol ? symbol.toUpperCase() : null;
+}
+
+function mapStockQuoteToUnifiedPrice(symbol: string, assetType: AssetType, quote: StockQuote): UnifiedPrice {
+  return {
+    symbol,
+    assetType,
+    price: quote.c,
+    priceChange24h: quote.d,
+    priceChangePercent24h: quote.dp,
+    currency: 'USD',
+    source: 'finnhub',
+    fetchedAt: new Date(),
+  };
+}
+
+function mapYahooQuoteToStockQuote(quote: YahooQuote): StockQuote {
+  return {
+    c: quote.price,
+    d: quote.change,
+    dp: quote.changePercent,
+    h: quote.price,
+    l: quote.price,
+    o: quote.price,
+    pc: quote.price - quote.change,
+    t: Math.floor(Date.now() / 1000),
+  };
 }
 
 function isCacheValid(price: UnifiedPrice, assetType: AssetType): boolean {
@@ -49,7 +92,9 @@ export async function fetchPrice(
   symbol: string,
   assetType: AssetType
 ): Promise<UnifiedPrice | null> {
-  const cacheKey = getCacheKey(symbol, assetType);
+  const normalizedSymbol = getNormalizedSymbol(symbol, assetType);
+  if (!normalizedSymbol) return null;
+  const cacheKey = getCacheKey(normalizedSymbol, assetType);
 
   // Check memory cache first
   const cached = priceCache.get(cacheKey);
@@ -64,29 +109,29 @@ export async function fetchPrice(
       case 'stock':
       case 'etf':
       case 'mutual_fund': {
-        const quote = await getStockQuote(symbol);
+        const quote = await getStockQuote(normalizedSymbol);
         if (quote) {
-          price = {
-            symbol,
-            assetType,
-            price: quote.c,
-            priceChange24h: quote.d,
-            priceChangePercent24h: quote.dp,
-            currency: 'USD',
-            source: 'finnhub',
-            fetchedAt: new Date(),
-          };
+          price = mapStockQuoteToUnifiedPrice(normalizedSymbol, assetType, quote);
+        } else {
+          const yahooQuote = await getYahooQuote(normalizedSymbol);
+          if (yahooQuote) {
+            price = mapStockQuoteToUnifiedPrice(
+              normalizedSymbol,
+              assetType,
+              mapYahooQuoteToStockQuote(yahooQuote)
+            );
+          }
         }
         break;
       }
 
       case 'crypto': {
-        const coinId = getCoinGeckoId(symbol);
+        const coinId = await resolveCoinGeckoId(normalizedSymbol);
         if (coinId) {
           const coinPrice = await getCoinPrice(coinId);
           if (coinPrice) {
             price = {
-              symbol,
+              symbol: normalizedSymbol,
               assetType,
               price: coinPrice.current_price,
               priceChange24h: coinPrice.price_change_24h,
@@ -103,7 +148,7 @@ export async function fetchPrice(
       case 'commodity_gold':
       case 'commodity_silver':
       case 'commodity_platinum': {
-        const metalSymbol = getMetalSymbol(assetType);
+        const metalSymbol = getNormalizedSymbol(normalizedSymbol, assetType);
         if (metalSymbol) {
           const metalPrice = await getMetalPrice(metalSymbol);
           if (metalPrice) {
@@ -127,7 +172,7 @@ export async function fetchPrice(
         return null;
     }
   } catch (error) {
-    console.error(`Error fetching price for ${symbol}:`, error);
+    console.error(`Error fetching price for ${normalizedSymbol}:`, error);
   }
 
   if (price) {
@@ -152,17 +197,21 @@ export async function fetchPricesForHoldings(
   const metalTypes: AssetType[] = [];
 
   for (const holding of holdings) {
-    if (!holding.symbol) continue;
+    const normalizedSymbol = getNormalizedSymbol(holding.symbol, holding.asset_type);
 
     switch (holding.asset_type) {
       case 'stock':
       case 'etf':
       case 'mutual_fund':
-        stockSymbols.push(holding.symbol);
-        symbolToAssetType.set(holding.symbol, holding.asset_type);
+        if (normalizedSymbol) {
+          stockSymbols.push(normalizedSymbol);
+          symbolToAssetType.set(normalizedSymbol, holding.asset_type);
+        }
         break;
       case 'crypto':
-        cryptoSymbols.push(holding.symbol);
+        if (normalizedSymbol) {
+          cryptoSymbols.push(normalizedSymbol);
+        }
         break;
       case 'commodity_gold':
       case 'commodity_silver':
@@ -176,34 +225,56 @@ export async function fetchPricesForHoldings(
 
   // Fetch stocks/ETFs/mutual funds in batch
   if (stockSymbols.length > 0) {
-    const stockQuotes = await getMultipleStockQuotes([...new Set(stockSymbols)]);
-    for (const [symbol, quote] of stockQuotes) {
+    const uniqueStockSymbols = [...new Set(stockSymbols)];
+    const stockQuotes = await getMultipleStockQuotes(uniqueStockSymbols);
+
+    for (const [symbol, quote] of stockQuotes.entries()) {
       const actualType = symbolToAssetType.get(symbol) || 'stock';
-      const price: UnifiedPrice = {
-        symbol,
-        assetType: actualType,
-        price: quote.c,
-        priceChange24h: quote.d,
-        priceChangePercent24h: quote.dp,
-        currency: 'USD',
-        source: 'finnhub',
-        fetchedAt: new Date(),
-      };
+      const price = mapStockQuoteToUnifiedPrice(symbol, actualType, quote);
       results.set(getCacheKey(symbol, actualType), price);
       priceCache.set(getCacheKey(symbol, actualType), price);
+    }
+
+    // Fallback quotes from Yahoo for symbols restricted by Finnhub (e.g. 403)
+    const missingSymbols = uniqueStockSymbols.filter((symbol) => !stockQuotes.has(symbol));
+    if (missingSymbols.length > 0) {
+      const fallbackQuotes = await Promise.all(
+        missingSymbols.map(async (symbol) => {
+          const yahooQuote = await getYahooQuote(symbol);
+          return yahooQuote ? { symbol, quote: mapYahooQuoteToStockQuote(yahooQuote) } : null;
+        })
+      );
+
+      for (const fallback of fallbackQuotes) {
+        if (!fallback) continue;
+        const actualType = symbolToAssetType.get(fallback.symbol) || 'stock';
+        const price = mapStockQuoteToUnifiedPrice(fallback.symbol, actualType, fallback.quote);
+        results.set(getCacheKey(fallback.symbol, actualType), price);
+        priceCache.set(getCacheKey(fallback.symbol, actualType), price);
+      }
     }
   }
 
   // Fetch crypto in batch
   if (cryptoSymbols.length > 0) {
-    const coinIds = cryptoSymbols
-      .map((s) => getCoinGeckoId(s))
-      .filter((id): id is string => id !== null);
+    const symbolToCoinId = new Map<string, string>();
+    await Promise.all(
+      [...new Set(cryptoSymbols)].map(async (symbol) => {
+        const coinId = await resolveCoinGeckoId(symbol);
+        if (coinId) {
+          symbolToCoinId.set(symbol, coinId);
+        }
+      })
+    );
+    const coinIds = [...new Set(symbolToCoinId.values())];
 
     if (coinIds.length > 0) {
       const coinPrices = await getMultipleCoinPrices([...new Set(coinIds)]);
       for (const coinPrice of coinPrices) {
-        const symbol = coinPrice.symbol.toUpperCase();
+        const symbolsForCoin = Array.from(symbolToCoinId.entries())
+          .filter(([, coinId]) => coinId === coinPrice.id)
+          .map(([symbol]) => symbol);
+        const symbol = symbolsForCoin[0] || coinPrice.symbol.toUpperCase();
         const price: UnifiedPrice = {
           symbol,
           assetType: 'crypto',
@@ -330,7 +401,8 @@ export async function fetchPriceHistory(
   assetType: AssetType,
   days: number | 'max' = 30
 ): Promise<PricePoint[]> {
-  const cacheKey = getHistoryCacheKey(symbol, days);
+  const normalizedSymbol = getNormalizedSymbol(symbol, assetType) || symbol.toUpperCase();
+  const cacheKey = getHistoryCacheKey(`${assetType}:${normalizedSymbol}`, days);
   const cached = historyCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < HISTORY_CACHE_DURATION) {
     return cached.data;
@@ -341,7 +413,7 @@ export async function fetchPriceHistory(
   try {
     switch (assetType) {
       case 'crypto': {
-        const coinId = getCoinGeckoId(symbol);
+        const coinId = await resolveCoinGeckoId(normalizedSymbol);
         if (coinId) {
           data = await getCoinMarketChart(coinId, days);
         }
@@ -355,11 +427,20 @@ export async function fetchPriceHistory(
         const daysNum = days === 'max' ? 365 * 5 : days;
         const from = now - daysNum * 24 * 60 * 60;
         const resolution = daysNum <= 7 ? '60' : 'D';
-        data = await getStockCandles(symbol, resolution, from, now);
+        data = await getStockCandles(normalizedSymbol, resolution, from, now);
 
         // Fallback to Yahoo Finance if Finnhub returns no data (403/restricted)
         if (data.length === 0) {
-          data = await getYahooChart(symbol, days);
+          data = await getYahooChart(normalizedSymbol, days);
+        }
+        break;
+      }
+      case 'commodity_gold':
+      case 'commodity_silver':
+      case 'commodity_platinum': {
+        const yahooSymbol = METAL_HISTORY_SYMBOL_BY_TYPE[assetType];
+        if (yahooSymbol) {
+          data = await getYahooChart(yahooSymbol, days);
         }
         break;
       }
@@ -368,12 +449,14 @@ export async function fetchPriceHistory(
         return [];
     }
   } catch (error) {
-    console.error(`Error fetching price history for ${symbol}:`, error);
+    console.error(`Error fetching price history for ${normalizedSymbol}:`, error);
   }
 
   if (data.length > 0) {
-    historyCache.set(cacheKey, { data, fetchedAt: Date.now() });
+    const normalized = [...data].sort((a, b) => a.timestamp - b.timestamp);
+    historyCache.set(cacheKey, { data: normalized, fetchedAt: Date.now() });
+    return normalized;
   }
 
-  return data;
+  return [];
 }
