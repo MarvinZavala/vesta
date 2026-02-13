@@ -65,6 +65,44 @@ export async function searchStocks(query: string): Promise<StockSymbol[]> {
   }
 }
 
+/**
+ * Get stock candle (OHLCV) data for charting
+ * @param resolution - 'D' for daily, 'W' for weekly, 'M' for monthly
+ */
+export async function getStockCandles(
+  symbol: string,
+  resolution: string,
+  from: number,
+  to: number
+): Promise<{ timestamp: number; price: number }[]> {
+  try {
+    const response = await fetch(
+      `${BASE_URL}/stock/candle?symbol=${symbol.toUpperCase()}&resolution=${resolution}&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`
+    );
+
+    if (!response.ok) {
+      console.error('Finnhub candle API error:', response.status);
+      return [];
+    }
+
+    const data = await response.json();
+
+    // 's' = 'no_data' when no candle data available
+    if (data.s === 'no_data' || !data.c || !data.t) {
+      return [];
+    }
+
+    // Map close prices with timestamps
+    return data.t.map((t: number, i: number) => ({
+      timestamp: t * 1000, // Convert to ms
+      price: data.c[i],
+    }));
+  } catch (error) {
+    console.error('Error fetching stock candles:', error);
+    return [];
+  }
+}
+
 export async function getMultipleStockQuotes(
   symbols: string[]
 ): Promise<Map<string, StockQuote>> {

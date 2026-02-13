@@ -1,9 +1,10 @@
 // Unified price service
 // Coordinates fetching prices from multiple sources
 
-import { getStockQuote, getMultipleStockQuotes, StockQuote } from './finnhub';
-import { getCoinPrice, getMultipleCoinPrices, getCoinGeckoId, CoinPrice } from './coingecko';
+import { getStockQuote, getMultipleStockQuotes, getStockCandles, StockQuote } from './finnhub';
+import { getCoinPrice, getMultipleCoinPrices, getCoinGeckoId, getCoinMarketChart, CoinPrice } from './coingecko';
 import { getMetalPrice, getMetalSymbol, MetalPrice } from './metals';
+import { getYahooChart } from './yahoo';
 import { supabase } from '../supabase';
 import { AssetType, PriceCache, Holding } from '@/types/database';
 
@@ -303,4 +304,76 @@ export async function loadCachedPrices(): Promise<Map<string, UnifiedPrice>> {
 // Clear memory cache
 export function clearPriceCache(): void {
   priceCache.clear();
+}
+
+// --- Price History ---
+
+export interface PricePoint {
+  timestamp: number;
+  price: number;
+}
+
+// In-memory cache for history data
+const historyCache = new Map<string, { data: PricePoint[]; fetchedAt: number }>();
+const HISTORY_CACHE_DURATION = 5 * 60 * 1000; // 5 min
+
+function getHistoryCacheKey(symbol: string, days: number | 'max'): string {
+  return `history:${symbol}:${days}`;
+}
+
+/**
+ * Fetch price history for any supported asset type.
+ * Returns normalized PricePoint[] sorted by timestamp ascending.
+ */
+export async function fetchPriceHistory(
+  symbol: string,
+  assetType: AssetType,
+  days: number | 'max' = 30
+): Promise<PricePoint[]> {
+  const cacheKey = getHistoryCacheKey(symbol, days);
+  const cached = historyCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < HISTORY_CACHE_DURATION) {
+    return cached.data;
+  }
+
+  let data: PricePoint[] = [];
+
+  try {
+    switch (assetType) {
+      case 'crypto': {
+        const coinId = getCoinGeckoId(symbol);
+        if (coinId) {
+          data = await getCoinMarketChart(coinId, days);
+        }
+        break;
+      }
+      case 'stock':
+      case 'etf':
+      case 'mutual_fund': {
+        // Try Finnhub first
+        const now = Math.floor(Date.now() / 1000);
+        const daysNum = days === 'max' ? 365 * 5 : days;
+        const from = now - daysNum * 24 * 60 * 60;
+        const resolution = daysNum <= 7 ? '60' : 'D';
+        data = await getStockCandles(symbol, resolution, from, now);
+
+        // Fallback to Yahoo Finance if Finnhub returns no data (403/restricted)
+        if (data.length === 0) {
+          data = await getYahooChart(symbol, days);
+        }
+        break;
+      }
+      default:
+        // Manual assets have no price history
+        return [];
+    }
+  } catch (error) {
+    console.error(`Error fetching price history for ${symbol}:`, error);
+  }
+
+  if (data.length > 0) {
+    historyCache.set(cacheKey, { data, fetchedAt: Date.now() });
+  }
+
+  return data;
 }

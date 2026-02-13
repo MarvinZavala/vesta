@@ -122,6 +122,49 @@ export async function searchCoins(query: string): Promise<CoinSearchResult[]> {
   }
 }
 
+/**
+ * Get historical market chart data for a coin
+ * @param days - 1, 7, 30, 90, 365, or 'max'
+ */
+export async function getCoinMarketChart(
+  coinId: string,
+  days: number | 'max',
+  currency: string = 'usd'
+): Promise<{ timestamp: number; price: number }[]> {
+  try {
+    const baseUrl = `${BASE_URL}/coins/${coinId}/market_chart?vs_currency=${currency}&days=${days}`;
+
+    // Try with API key first
+    let response = await fetch(addApiKey(baseUrl));
+
+    // If unauthorized/forbidden, wait briefly then try public endpoint (no key)
+    if (response.status === 401 || response.status === 403) {
+      await new Promise((r) => setTimeout(r, 1500));
+      response = await fetch(baseUrl);
+    }
+
+    // If rate-limited (429), wait longer and retry once
+    if (response.status === 429) {
+      await new Promise((r) => setTimeout(r, 3000));
+      response = await fetch(baseUrl);
+    }
+
+    if (!response.ok) {
+      console.error('CoinGecko market chart error:', response.status);
+      return [];
+    }
+
+    const data = await response.json();
+    return (data.prices || []).map(([timestamp, price]: [number, number]) => ({
+      timestamp,
+      price,
+    }));
+  } catch (error) {
+    console.error('Error fetching coin market chart:', error);
+    return [];
+  }
+}
+
 export async function getSimplePrice(
   coinIds: string[],
   currency: string = 'usd'

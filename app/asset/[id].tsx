@@ -17,6 +17,7 @@ import * as Haptics from 'expo-haptics';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, Button, AnimatedCounter, PercentCounter } from '@/components/ui';
 import { AnimatedCardWrapper } from '@/components/ui/AnimatedCard';
+import { PriceChart } from '@/components/charts';
 import { useTheme } from '@/hooks/useTheme';
 import { usePortfolioStore } from '@/store/portfolioStore';
 import { formatCurrency, ASSET_TYPE_LABELS, ASSET_TYPE_ICONS } from '@/utils/formatters';
@@ -140,6 +141,11 @@ export default function AssetDetailScreen() {
           title: holding.symbol || holding.name,
           headerStyle: { backgroundColor: colors.background },
           headerTintColor: colors.text,
+          headerLeft: () => (
+            <TouchableOpacity onPress={() => router.back()} style={{ padding: Spacing.sm, marginLeft: -Spacing.xs }}>
+              <Ionicons name="chevron-back" size={24} color={colors.text} />
+            </TouchableOpacity>
+          ),
           headerRight: () => (
             <TouchableOpacity onPress={handleEdit} style={{ padding: Spacing.sm }}>
               <Ionicons name="create-outline" size={24} color={colors.primary} />
@@ -215,8 +221,19 @@ export default function AssetDetailScreen() {
           </Card>
         </AnimatedCardWrapper>
 
+        {/* Price Chart - only for tradeable assets */}
+        {holding.symbol && ['stock', 'etf', 'mutual_fund', 'crypto'].includes(holding.asset_type) && (
+          <AnimatedCardWrapper index={1}>
+            <PriceChart
+              symbol={holding.symbol}
+              assetType={holding.asset_type}
+              costBasis={holding.cost_basis ?? undefined}
+            />
+          </AnimatedCardWrapper>
+        )}
+
         {/* Position Details */}
-        <AnimatedCardWrapper index={1}>
+        <AnimatedCardWrapper index={2}>
           <Card style={styles.detailsCard}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Position Details</Text>
 
@@ -267,7 +284,7 @@ export default function AssetDetailScreen() {
 
         {/* Additional Info */}
         {(holding.sector || holding.country || holding.interest_rate != null || holding.maturity_date || holding.property_type || holding.property_address || holding.payment_frequency) && (
-          <AnimatedCardWrapper index={2}>
+          <AnimatedCardWrapper index={3}>
           <Card style={styles.detailsCard}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Additional Information</Text>
 
@@ -335,7 +352,7 @@ export default function AssetDetailScreen() {
 
         {/* Notes */}
         {holding.notes && (
-          <AnimatedCardWrapper index={3}>
+          <AnimatedCardWrapper index={4}>
             <Card style={styles.detailsCard}>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Notes</Text>
               <Text style={[styles.notesText, { color: colors.textSecondary }]}>{holding.notes}</Text>

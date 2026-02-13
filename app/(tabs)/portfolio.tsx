@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,12 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  interpolateColor,
+} from 'react-native-reanimated';
 import { AddAssetSheet } from '@/components/AddAssetSheet';
 import { useTheme } from '@/hooks/useTheme';
 import { usePortfolioStore } from '@/store/portfolioStore';
@@ -27,19 +33,85 @@ import {
 import { AssetType, HoldingWithPrice } from '@/types/database';
 import { FontSize, FontWeight, Spacing, BorderRadius, Shadow } from '@/constants/theme';
 
-const FILTER_TYPES: { type: AssetType | 'all'; label: string }[] = [
-  { type: 'all', label: 'All' },
-  { type: 'stock', label: 'Stocks' },
-  { type: 'etf', label: 'ETFs' },
-  { type: 'crypto', label: 'Crypto' },
-  { type: 'commodity_gold', label: 'Gold' },
-  { type: 'real_estate', label: 'Property' },
-  { type: 'fixed_income_bond', label: 'Bonds' },
-  { type: 'cash', label: 'Cash' },
-  { type: 'other', label: 'Other' },
+// Filter config with icons and accent colors
+const FILTER_CONFIG: {
+  type: AssetType | 'all';
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  color: string;
+}[] = [
+  { type: 'all', label: 'All', icon: 'grid', color: '#059669' },
+  { type: 'stock', label: 'Stocks', icon: 'trending-up', color: '#4F46E5' },
+  { type: 'etf', label: 'ETFs', icon: 'layers', color: '#7C3AED' },
+  { type: 'crypto', label: 'Crypto', icon: 'logo-bitcoin', color: '#F59E0B' },
+  { type: 'commodity_gold', label: 'Gold', icon: 'diamond', color: '#EAB308' },
+  { type: 'real_estate', label: 'Property', icon: 'home', color: '#F97316' },
+  { type: 'fixed_income_bond', label: 'Bonds', icon: 'document-text', color: '#10B981' },
+  { type: 'cash', label: 'Cash', icon: 'cash', color: '#22C55E' },
+  { type: 'other', label: 'Other', icon: 'cube', color: '#6366F1' },
 ];
 
 type FilterType = 'all' | AssetType;
+
+// Animated filter chip component
+function FilterChip({
+  label,
+  icon,
+  color,
+  count,
+  isActive,
+  onPress,
+  isDark,
+  colors,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  color: string;
+  count: number;
+  isActive: boolean;
+  onPress: () => void;
+  isDark: boolean;
+  colors: any;
+}) {
+  return (
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={onPress}
+      style={[
+        styles.filterChip,
+        isActive
+          ? {
+              backgroundColor: isDark ? color + '18' : color + '0F',
+              borderColor: isDark ? color + '40' : color + '25',
+            }
+          : {
+              backgroundColor: isDark ? colors.backgroundSecondary : colors.backgroundTertiary,
+              borderColor: 'transparent',
+            },
+      ]}
+    >
+      {isActive && (
+        <Ionicons name={icon} size={13} color={color} style={{ marginRight: 4 }} />
+      )}
+      <Text
+        style={[
+          styles.filterChipText,
+          {
+            color: isActive ? color : colors.textSecondary,
+            fontWeight: isActive ? FontWeight.semibold : FontWeight.medium,
+          },
+        ]}
+      >
+        {label}
+      </Text>
+      {count > 0 && isActive && (
+        <View style={[styles.filterCount, { backgroundColor: color + '20' }]}>
+          <Text style={[styles.filterCountText, { color }]}>{count}</Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+}
 
 export default function PortfolioScreen() {
   const { colors, isDark } = useTheme();
@@ -54,6 +126,22 @@ export default function PortfolioScreen() {
   const isFree = profile?.subscription_tier === 'free';
   const holdingsCount = holdings.length;
   const canAddMore = !isFree || holdingsCount < 5;
+
+  // Count holdings per type for badges & smart filtering
+  const typeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const h of holdingsWithPrices) {
+      counts[h.asset_type] = (counts[h.asset_type] || 0) + 1;
+    }
+    return counts;
+  }, [holdingsWithPrices]);
+
+  // Only show filters that have holdings (plus "All" always)
+  const visibleFilters = useMemo(() => {
+    return FILTER_CONFIG.filter(
+      (f) => f.type === 'all' || (typeCounts[f.type] ?? 0) > 0
+    );
+  }, [typeCounts]);
 
   const filteredHoldings = holdingsWithPrices.filter((h) => {
     const matchesSearch =
@@ -189,51 +277,56 @@ export default function PortfolioScreen() {
       </View>
 
       {/* Filters */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.filterScroll}
-        contentContainerStyle={styles.filterContent}
-      >
-        {FILTER_TYPES.map((f) => {
-          const active = filter === f.type;
-          return (
-            <TouchableOpacity
-              key={f.type}
-              style={[
-                styles.filterChip,
-                {
-                  backgroundColor: active ? colors.primary : 'transparent',
-                  borderColor: active ? colors.primary : colors.border,
-                },
-              ]}
-              onPress={() => {
-                Haptics.selectionAsync();
-                setFilter(f.type);
-              }}
-            >
-              <Text
-                style={[
-                  styles.filterChipText,
-                  { color: active ? '#FFF' : colors.textSecondary },
-                ]}
-              >
-                {f.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+      <View style={styles.filterWrapper}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterContent}
+        >
+          {visibleFilters.map((f) => {
+            const active = filter === f.type;
+            const count = f.type === 'all'
+              ? holdingsWithPrices.length
+              : (typeCounts[f.type] ?? 0);
 
-      {/* Count */}
+            return (
+              <FilterChip
+                key={f.type}
+                label={f.label}
+                icon={f.icon}
+                color={isDark
+                  ? (f.type === 'all' ? '#34D399' : ASSET_TYPE_COLORS[f.type] || f.color)
+                  : f.color}
+                count={count}
+                isActive={active}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setFilter(f.type);
+                }}
+                isDark={isDark}
+                colors={colors}
+              />
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* Count + Limit */}
       <View style={styles.countRow}>
         <Text style={[styles.countText, { color: colors.textTertiary }]}>
           {filteredHoldings.length} holding{filteredHoldings.length !== 1 ? 's' : ''}
         </Text>
         {isFree && (
-          <Text style={[styles.countLimit, { color: colors.textTertiary }]}>
-            {holdingsCount}/5 free
-          </Text>
+          <TouchableOpacity
+            onPress={() => router.push('/paywall')}
+            style={[styles.limitBadge, { backgroundColor: isDark ? 'rgba(251,191,36,0.1)' : 'rgba(217,119,6,0.06)' }]}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.limitText, { color: colors.warning }]}>
+              {holdingsCount}/5 free
+            </Text>
+            <Ionicons name="chevron-forward" size={12} color={colors.warning} />
+          </TouchableOpacity>
         )}
       </View>
 
@@ -304,30 +397,48 @@ const styles = StyleSheet.create({
     fontSize: FontSize.md,
   },
 
-  // Filters
-  filterScroll: {
-    maxHeight: 44,
+  // Filters — Coinbase-inspired chips
+  filterWrapper: {
     marginTop: Spacing.sm,
+    marginBottom: 2,
   },
   filterContent: {
     paddingHorizontal: Spacing.lg,
-    gap: Spacing.xs,
+    paddingVertical: Spacing.xs,
+    gap: 8,
+    alignItems: 'center',
   },
   filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: BorderRadius.full,
-    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
   },
   filterChipText: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
+    fontSize: 13,
+    letterSpacing: -0.1,
+  },
+  filterCount: {
+    marginLeft: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+    minWidth: 20,
+    alignItems: 'center',
+  },
+  filterCountText: {
+    fontSize: 11,
+    fontWeight: FontWeight.bold,
+    fontVariant: ['tabular-nums'],
   },
 
   // Count
   countRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.sm,
   },
@@ -335,8 +446,17 @@ const styles = StyleSheet.create({
     fontSize: FontSize.sm,
     fontWeight: FontWeight.medium,
   },
-  countLimit: {
-    fontSize: FontSize.sm,
+  limitBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 2,
+  },
+  limitText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
   },
 
   // List
