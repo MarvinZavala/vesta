@@ -9,11 +9,14 @@ import {
   Modal,
   Alert,
   RefreshControl,
+  KeyboardAvoidingView,
+  Platform,
+  TextInput,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { Button, Input } from '@/components/ui';
+import { Button } from '@/components/ui';
 import { AlertItemSkeleton } from '@/components/ui/Skeleton';
 import { useTheme } from '@/hooks/useTheme';
 import { usePortfolioStore } from '@/store/portfolioStore';
@@ -29,7 +32,7 @@ import {
   deleteAlert,
   getActiveAlertsCount,
 } from '@/services/alerts';
-import { AlertType } from '@/types/database';
+import { AlertType, HoldingWithPrice } from '@/types/database';
 
 export default function AlertsScreen() {
   const { colors, isDark } = useTheme();
@@ -95,7 +98,7 @@ export default function AlertsScreen() {
     holdingSymbol: string | null,
     alertType: AlertType,
     targetValue: number,
-  ) => {
+  ): Promise<boolean> => {
     const subscriptionTier = profile?.subscription_tier || 'free';
     const limits = TIER_LIMITS[subscriptionTier];
     const activeCount = await getActiveAlertsCount();
@@ -109,7 +112,7 @@ export default function AlertsScreen() {
           { text: 'Upgrade', onPress: () => router.push('/paywall') },
         ],
       );
-      return;
+      return false;
     }
 
     const newAlert = await createAlert({
@@ -125,8 +128,10 @@ export default function AlertsScreen() {
         ...prev,
       ]);
       setShowCreateModal(false);
+      return true;
     } else {
       Alert.alert('Error', 'Failed to create alert');
+      return false;
     }
   };
 
@@ -322,6 +327,21 @@ export default function AlertsScreen() {
 }
 
 // ── Create Alert Modal ────────────────────────────────────────────────────
+type CreateAlertModalProps = {
+  visible: boolean;
+  onClose: () => void;
+  holdings: HoldingWithPrice[];
+  onCreateAlert: (
+    id: string,
+    name: string,
+    sym: string | null,
+    type: AlertType,
+    val: number
+  ) => Promise<boolean> | boolean;
+  colors: any;
+  isDark: boolean;
+};
+
 function CreateAlertModal({
   visible,
   onClose,
@@ -329,88 +349,176 @@ function CreateAlertModal({
   onCreateAlert,
   colors,
   isDark,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  holdings: any[];
-  onCreateAlert: (id: string, name: string, sym: string | null, type: AlertType, val: number) => void;
-  colors: any;
-  isDark: boolean;
-}) {
-  const [selectedHolding, setSelectedHolding] = useState<any>(null);
+}: CreateAlertModalProps) {
+  const [step, setStep] = useState<'select' | 'configure'>('select');
+  const [selectedHolding, setSelectedHolding] = useState<HoldingWithPrice | null>(null);
   const [alertType, setAlertType] = useState<'price_above' | 'price_below'>('price_above');
   const [targetValue, setTargetValue] = useState('');
+  const [targetValueError, setTargetValueError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
-  const handleCreate = async () => {
-    if (!selectedHolding || !targetValue) return;
-    setIsCreating(true);
-    await onCreateAlert(selectedHolding.id, selectedHolding.name, selectedHolding.symbol, alertType, parseFloat(targetValue));
-    setIsCreating(false);
+  const resetModalState = useCallback(() => {
+    setStep('select');
     setSelectedHolding(null);
-    setTargetValue('');
     setAlertType('price_above');
+    setTargetValue('');
+    setTargetValueError(null);
+    setIsCreating(false);
+  }, []);
+
+  useEffect(() => {
+    if (!visible) {
+      resetModalState();
+    }
+  }, [visible, resetModalState]);
+
+  const handleSelectHolding = (holding: HoldingWithPrice) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedHolding(holding);
+    setTargetValue('');
+    setTargetValueError(null);
+    setAlertType('price_above');
+    setStep('configure');
+  };
+
+  const handleCreate = async () => {
+    if (!selectedHolding) return;
+
+    const parsedTarget = parseFloat(targetValue.replace(/,/g, ''));
+    if (!Number.isFinite(parsedTarget) || parsedTarget <= 0) {
+      setTargetValueError('Enter a valid target price');
+      return;
+    }
+
+    setTargetValueError(null);
+    setIsCreating(true);
+    const created = await onCreateAlert(
+      selectedHolding.id,
+      selectedHolding.name,
+      selectedHolding.symbol,
+      alertType,
+      parsedTarget
+    );
+    setIsCreating(false);
+
+    if (created) {
+      resetModalState();
+    }
   };
 
   const handleClose = () => {
-    setSelectedHolding(null);
-    setTargetValue('');
-    setAlertType('price_above');
+    resetModalState();
     onClose();
   };
 
+  const currentPrice = selectedHolding?.current_price ?? 0;
+  const quickUpTarget = currentPrice > 0 ? currentPrice * 1.03 : 0;
+  const quickDownTarget = currentPrice > 0 ? currentPrice * 0.97 : 0;
+
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet">
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={handleClose}
+    >
       <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
         <View style={styles.modalHeader}>
-          <TouchableOpacity onPress={handleClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Ionicons name="close" size={28} color={colors.text} />
+          <TouchableOpacity
+            onPress={step === 'configure' ? () => setStep('select') : handleClose}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons
+              name={step === 'configure' ? 'chevron-back' : 'close'}
+              size={28}
+              color={colors.text}
+            />
           </TouchableOpacity>
-          <Text style={[styles.modalTitle, { color: colors.text }]}>New Alert</Text>
+          <View style={styles.modalTitleWrap}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {step === 'select' ? 'New Alert' : 'Configure Alert'}
+            </Text>
+            <Text style={[styles.modalSubTitle, { color: colors.textTertiary }]}>
+              {step === 'select'
+                ? 'Choose an asset to continue'
+                : (selectedHolding?.symbol || selectedHolding?.name || '')}
+            </Text>
+          </View>
           <View style={{ width: 28 }} />
         </View>
 
-        <ScrollView style={styles.modalScroll} keyboardShouldPersistTaps="handled">
-          <Text style={[styles.stepLabel, { color: colors.textTertiary }]}>SELECT ASSET</Text>
+        <KeyboardAvoidingView
+          style={styles.modalBodyContainer}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          {step === 'select' ? (
+            <ScrollView style={styles.modalScroll} keyboardShouldPersistTaps="handled">
+              <Text style={[styles.stepLabel, { color: colors.textTertiary }]}>SELECT ASSET</Text>
 
-          {holdings.length === 0 ? (
-            <View style={[styles.noAssetsCard, { backgroundColor: colors.card }]}>
-              <Text style={[styles.noAssetsText, { color: colors.textSecondary }]}>
-                Add assets to your portfolio first
-              </Text>
-            </View>
+              {holdings.length === 0 ? (
+                <View style={[styles.noAssetsCard, { backgroundColor: colors.card }]}>
+                  <Text style={[styles.noAssetsText, { color: colors.textSecondary }]}>
+                    Add assets to your portfolio first
+                  </Text>
+                </View>
+              ) : (
+                <View style={[styles.holdingsList, { backgroundColor: colors.card }]}>
+                  {holdings.map((h, i) => {
+                    const isLast = i === holdings.length - 1;
+                    return (
+                      <TouchableOpacity
+                        key={h.id}
+                        style={[
+                          styles.holdingSelectRow,
+                          !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+                        ]}
+                        onPress={() => handleSelectHolding(h)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.holdingSymbolText, { color: colors.text }]}>
+                            {h.symbol || h.name}
+                          </Text>
+                          <Text style={[styles.holdingNameText, { color: colors.textSecondary }]} numberOfLines={1}>
+                            {h.name}
+                          </Text>
+                          <Text style={[styles.holdingPriceText, { color: colors.textTertiary }]}>
+                            Current: {formatCurrency(h.current_price)}
+                          </Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={20} color={colors.textTertiary} />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+            </ScrollView>
           ) : (
-            <View style={[styles.holdingsList, { backgroundColor: colors.card }]}>
-              {holdings.map((h: any, i: number) => {
-                const selected = selectedHolding?.id === h.id;
-                const isLast = i === holdings.length - 1;
-                return (
-                  <TouchableOpacity
-                    key={h.id}
-                    style={[
-                      styles.holdingSelectRow,
-                      selected && { backgroundColor: isDark ? 'rgba(16,185,129,0.08)' : 'rgba(5,150,105,0.04)' },
-                      !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-                    ]}
-                    onPress={() => setSelectedHolding(h)}
-                  >
+            <ScrollView style={styles.modalScroll} keyboardShouldPersistTaps="handled">
+              {!!selectedHolding && (
+                <>
+                  <View style={[styles.selectedAssetCard, { backgroundColor: colors.card }]}>
+                    <View
+                      style={[
+                        styles.selectedAssetIcon,
+                        { backgroundColor: isDark ? 'rgba(16,185,129,0.14)' : 'rgba(5,150,105,0.08)' },
+                      ]}
+                    >
+                      <Ionicons name="notifications" size={18} color={colors.primary} />
+                    </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={[styles.holdingSymbolText, { color: colors.text }]}>
-                        {h.symbol || h.name}
+                      <Text style={[styles.selectedAssetTitle, { color: colors.text }]}>
+                        {selectedHolding.symbol || selectedHolding.name}
                       </Text>
-                      <Text style={[styles.holdingPriceText, { color: colors.textTertiary }]}>
-                        {formatCurrency(h.current_price)}
+                      <Text style={[styles.selectedAssetSubtitle, { color: colors.textSecondary }]}>
+                        {selectedHolding.name}
                       </Text>
                     </View>
-                    {selected && <Ionicons name="checkmark-circle" size={22} color={colors.primary} />}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
+                    <Text style={[styles.selectedAssetPrice, { color: colors.text }]}>
+                      {formatCurrency(selectedHolding.current_price)}
+                    </Text>
+                  </View>
 
-          {selectedHolding && (
-            <>
               <Text style={[styles.stepLabel, { color: colors.textTertiary, marginTop: Spacing.xl }]}>ALERT TYPE</Text>
               <View style={styles.alertTypeRow}>
                 {(['price_above', 'price_below'] as const).map(t => {
@@ -438,16 +546,50 @@ function CreateAlertModal({
               </View>
 
               <Text style={[styles.stepLabel, { color: colors.textTertiary, marginTop: Spacing.lg }]}>TARGET PRICE</Text>
-              <View style={[styles.priceInputRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <View
+                style={[
+                  styles.targetInputWrap,
+                  {
+                    backgroundColor: colors.card,
+                    borderColor: targetValueError ? colors.error : colors.border,
+                  },
+                ]}
+              >
                 <Text style={[styles.currencySign, { color: colors.textSecondary }]}>$</Text>
-                <Input
+                <TextInput
+                  style={[styles.targetInput, { color: colors.text }]}
                   placeholder="0.00"
+                  placeholderTextColor={colors.textTertiary}
                   value={targetValue}
-                  onChangeText={setTargetValue}
+                  onChangeText={(value) => {
+                    setTargetValue(value);
+                    if (targetValueError) setTargetValueError(null);
+                  }}
                   keyboardType="decimal-pad"
-                  style={styles.priceInput}
+                  autoFocus
                 />
               </View>
+              {!!targetValueError && (
+                <Text style={[styles.targetError, { color: colors.error }]}>{targetValueError}</Text>
+              )}
+
+              {currentPrice > 0 && (
+                <View style={styles.quickTargetsRow}>
+                  <TouchableOpacity
+                    style={[styles.quickTargetChip, { backgroundColor: colors.backgroundSecondary }]}
+                    onPress={() => setTargetValue(quickUpTarget.toFixed(2))}
+                  >
+                    <Text style={[styles.quickTargetText, { color: colors.gain }]}>+3% ({formatCurrency(quickUpTarget)})</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.quickTargetChip, { backgroundColor: colors.backgroundSecondary }]}
+                    onPress={() => setTargetValue(quickDownTarget.toFixed(2))}
+                  >
+                    <Text style={[styles.quickTargetText, { color: colors.loss }]}>-3% ({formatCurrency(quickDownTarget)})</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               <Text style={[styles.currentHint, { color: colors.textTertiary }]}>
                 Current: {formatCurrency(selectedHolding.current_price)}
               </Text>
@@ -458,11 +600,13 @@ function CreateAlertModal({
                 fullWidth
                 size="lg"
                 disabled={!targetValue || isCreating}
-                style={{ marginTop: Spacing.xl }}
+                style={styles.createButton}
               />
-            </>
+                </>
+              )}
+            </ScrollView>
           )}
-        </ScrollView>
+        </KeyboardAvoidingView>
       </View>
     </Modal>
   );
@@ -593,15 +737,24 @@ const styles = StyleSheet.create({
   modalContainer: { flex: 1 },
   modalHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
+    gap: Spacing.sm,
+  },
+  modalTitleWrap: {
+    flex: 1,
+    alignItems: 'center',
   },
   modalTitle: {
     fontSize: FontSize.lg,
     fontWeight: FontWeight.bold,
   },
+  modalSubTitle: {
+    fontSize: FontSize.xs,
+    marginTop: 2,
+  },
+  modalBodyContainer: { flex: 1 },
   modalScroll: {
     flex: 1,
     paddingHorizontal: Spacing.lg,
@@ -634,9 +787,40 @@ const styles = StyleSheet.create({
     fontSize: FontSize.md,
     fontWeight: FontWeight.semibold,
   },
+  holdingNameText: {
+    fontSize: FontSize.sm,
+    marginTop: 2,
+  },
   holdingPriceText: {
     fontSize: FontSize.sm,
+    marginTop: 4,
+  },
+  selectedAssetCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.md,
+    ...Shadow.sm,
+  },
+  selectedAssetIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectedAssetTitle: {
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.semibold,
+  },
+  selectedAssetSubtitle: {
+    fontSize: FontSize.sm,
     marginTop: 1,
+  },
+  selectedAssetPrice: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
   },
 
   alertTypeRow: {
@@ -656,24 +840,51 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.semibold,
   },
 
-  priceInputRow: {
+  targetInputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     borderRadius: BorderRadius.xl,
     borderWidth: StyleSheet.hairlineWidth,
     paddingLeft: Spacing.md,
+    minHeight: 52,
   },
   currencySign: {
     fontSize: FontSize.xl,
     fontWeight: FontWeight.medium,
   },
-  priceInput: {
+  targetInput: {
     flex: 1,
-    borderWidth: 0,
-    backgroundColor: 'transparent',
+    fontSize: FontSize.lg,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.xs,
+  },
+  targetError: {
+    fontSize: FontSize.xs,
+    marginTop: Spacing.xs,
+  },
+  quickTargetsRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  quickTargetChip: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: BorderRadius.full,
+    paddingVertical: Spacing.xs + 2,
+    paddingHorizontal: Spacing.sm,
+  },
+  quickTargetText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
   },
   currentHint: {
     fontSize: FontSize.sm,
     marginTop: Spacing.xs,
+  },
+  createButton: {
+    marginTop: Spacing.xl,
+    marginBottom: Spacing.xl,
   },
 });
